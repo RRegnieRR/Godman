@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#05070c">
+<title>Godman</title>
+<link rel="stylesheet" href="styles/game.css">
+<link rel="preload" as="image" href="assets/earth/earth_day_2048.jpg">
+<link rel="preload" as="image" href="assets/earth/earth_specular_2048.jpg">
+<link rel="preload" as="image" href="assets/earth/earth_clouds_1024.png">
+<link rel="preload" as="image" href="assets/earth/earth_elevation_nasa_4096.png">
+</head>
+<body>
+<div id="hud">
+  <div class="planet" id="hudPlanet">Earth</div>
+  <div class="stat" id="hudAlt">Altitude: 0 m</div>
+  <div class="stat" id="hudSpeed">Speed: 0 m/s</div>
+  <div class="stat" id="hudGrav"></div>
+</div>
+
+<div id="finder" role="dialog" aria-modal="true" aria-labelledby="finderTitle">
+  <div id="finderPanel">
+    <h2 id="finderTitle">Find a destination</h2>
+    <input id="finderSearch" type="search" autocomplete="off" placeholder="Planet, moon, star, or black hole">
+    <div id="finderResults"></div>
+    <div id="finderFooter">
+      <span>ESC &nbsp; close</span>
+    </div>
+  </div>
+</div>
+<div id="targetBanner"></div>
+<div id="fuelWrap">
+  <div id="fuelLabel">JETPACK FUEL</div>
+  <div id="fuelOuter"><div id="fuelBar"></div></div>
+</div>
+<div id="chargeWrap"><div id="chargeBar"></div></div>
+<div id="crosshair"></div>
+<div id="youAreHere" aria-hidden="true">You are here</div>
+<div id="toast"></div>
+
+<div id="loader">
+  <h1>GODMAN</h1>
+  <div id="loadOuter"><div id="loadBar"></div></div>
+  <div id="loadText">Igniting the stars...</div>
+</div>
+<div id="overlay">
+  <h1>GODMAN</h1>
+  <div id="menuButtons">
+    <button type="button" class="menuBtn" id="btnResume">PLAY</button>
+    <button type="button" class="menuBtn" data-panel="panelAch">ACHIEVEMENTS</button>
+    <button type="button" class="menuBtn" data-panel="panelSet">SETTINGS</button>
+    <button type="button" class="menuBtn" data-panel="panelInfo">INFO</button>
+  </div>
+  <div class="panel" id="panelAch"><h2>Worlds Visited</h2><div id="achList"></div></div>
+  <div class="panel" id="panelSet">
+    <h2>Settings</h2>
+    <div class="setRow">Mouse sensitivity: <input type="range" id="setSens" min="5" max="60" value="24"></div>
+    <div class="setRow"><label><input type="checkbox" id="setInvert"> Invert Y axis</label></div>
+    <div class="setRow">Graphics quality:
+      <select id="setQuality">
+        <option value="0.75">Low</option>
+        <option value="1">Medium</option>
+        <option value="2" selected>High (adaptive)</option>
+        <option value="2.25">Cinematic (adaptive)</option>
+      </select>
+    </div>
+    <div class="setRow">Terrain distance:
+      <select id="setTerrainRange">
+        <option value="3">Standard — 7 × 7 chunks</option>
+        <option value="5" selected>Far — 11 × 11 chunks</option>
+        <option value="7">Ultra — 15 × 15 chunks</option>
+      </select>
+      <div class="setHint">Mountains stream from Earth’s global elevation map and gain detail as you approach.</div>
+    </div>
+  </div>
+  <div class="panel" id="panelInfo">
+    <h2>Info &amp; Controls</h2>
+    <span class="key">W A S D</span> move · <span class="key">Shift</span> run · <span class="key">Mouse</span> look<br>
+    <span class="key">SPACE</span> on ground: hold to charge a jump toward your crosshair, release to launch<br>
+    <span class="key">SPACE</span> in the air: jetpack thrust toward the crosshair<br>
+    <span class="key">C</span> overview camera — zoom far out, orbit with the mouse, C again to return<br>
+    <span class="key">F</span> find a planet, moon, star, or black hole and smoothly inspect it<br>
+    <span class="key">T</span> lock onto the planet you are looking at — the camera tracks it<br>
+    <span class="key">Left-click</span> call an asteroid strike — it leaves a realistic impact crater (a rock can't punch through a world)<br>
+    <span class="key">L</span> pull up the orbital laser, then hold <span class="key">Left-click</span> to bore a hole clean through a planet<br>
+    <span class="key">Shift</span> run on the ground · air-brake in flight<br>
+    <span class="key">M</span> instant boost to 39,937.7 km/h — Apollo 10, the fastest humans have ever travelled<br>
+    <span class="key">R</span> respawn on Earth · <span class="key">Esc</span> open this menu<br><br>
+    A real-proportion universe at 1:10 scale: true planet sizes, true orbital
+    distances, dozens of real planetary systems sourced from NASA data, and
+    real galaxies placed at their true distances.
+    Deep space supercharges your flight so the cosmos stays reachable.
+    And 26,000 light-years away, Sagittarius A* — a supermassive black hole —
+    waits. Cross its event horizon and you will not die… you will arrive
+    somewhere where light and darkness have traded places.
+  </div>
+  <button type="button" class="menuBtn" id="btnBack" style="display:none">BACK</button>
+</div>
+
+<script src="vendor/three.r128.min.js" defer></script>
+<script src="src/config.js?v=20260826.3" defer></script>
+<script src="src/data/nasa-exoplanets.js?v=20260826.3" defer></script>
+<script src="src/runtime/adaptive-quality.js?v=20260826.3" defer></script>
+<script src="src/runtime/atmosphere.js?v=20260826.3" defer></script>
+<script src="src/runtime/physical-lighting.js?v=20260826.3" defer></script>
+<script src="src/runtime/surface-traces.js?v=20260826.3" defer></script>
+<script src="src/runtime/deep-sky.js?v=20260826.6" defer></script>
+<script src="src/game.js?v=20260901.4" defer></script>
+</body>
+</html>
