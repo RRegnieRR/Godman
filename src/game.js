@@ -88,37 +88,10 @@
   // ---------- Starfield ----------
   const starMats = [];
   const starLayers = [];
-  (function makeStars() {
-    function starLayer(count, rMin, rMax, size, band) {
-      const posA = new Float32Array(count * 3);
-      const colA = new Float32Array(count * 3);
-      const tints = [[1,1,1],[0.7,0.8,1],[1,0.92,0.75],[1,0.8,0.8],[0.85,1,1]];
-      for (let i = 0; i < count; i++) {
-        let x, y, z, l;
-        do { x = Math.random()*2-1; y = Math.random()*2-1; z = Math.random()*2-1; l = x*x+y*y+z*z; } while (l > 1 || l < 1e-4);
-        if (band) y *= 0.12;
-        const r = rMin + Math.random() * (rMax - rMin);
-        const s = r / Math.sqrt(x*x+y*y+z*z);
-        posA[i*3] = x*s; posA[i*3+1] = y*s; posA[i*3+2] = z*s;
-        const t = tints[(Math.random()*tints.length)|0];
-        const b = 0.5 + Math.random()*0.5;
-        colA[i*3] = t[0]*b; colA[i*3+1] = t[1]*b; colA[i*3+2] = t[2]*b;
-      }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.BufferAttribute(posA, 3));
-      g.setAttribute('color', new THREE.BufferAttribute(colA, 3));
-      const m = new THREE.PointsMaterial({ size: size, vertexColors: true, sizeAttenuation: true, transparent: true });
-      starMats.push(m);
-      const p = new THREE.Points(g, m);
-      if (band) p.rotation.z = 0.5;
-      scene.add(p);
-      starLayers.push(p);
-    }
-    starLayer(7000, 4e21, 6e21, 6.0e18, false);
-    starLayer(2500, 4e21, 6e21, 1.2e19, false);
-    starLayer(12000, 4.5e21, 6e21, 6.5e18, true);
-    starLayer(6000, 4e21, 6e21, 4.0e18, false);
-  })();
+  // The old implementation placed stars on several spherical shells hundreds
+  // of thousands of light-years away. From inside, those shells looked like a
+  // dotted end wall. The navigable Milky Way below now supplies the sky instead;
+  // beyond its disk there is simply progressively emptier intergalactic space.
 
   function V3n(x, y, z) { return new THREE.Vector3(x, y, z); }
   function softSprite(color1, color2) {
@@ -882,7 +855,8 @@
         sceneDepthTexture: { value: null },
         viewport: { value: new THREE.Vector2(1, 1) },
         schwarzschildUv: { value: new THREE.Vector2(1e-6, 1e-6) },
-        lensDepth: { value: 1 }
+        lensDepth: { value: 1 },
+        traceSteps: { value: 88 }
       },
       vertexShader: [
         'varying vec2 vUv;',
@@ -901,6 +875,7 @@
         'uniform vec2 viewport;',
         'uniform vec2 schwarzschildUv;',
         'uniform float lensDepth;',
+        'uniform int traceSteps;',
         'const float PI = 3.141592653589793;',
         'float hash21(vec2 p){',
         '  p = fract(p * vec2(123.34, 456.21));',
@@ -954,10 +929,11 @@
         '  vec3 radiance=vec3(0.0);',
         '  bool captured=false;',
         '  bool escaped=false;',
-        '  for(int i=0;i<128;i++){',
+        '  for(int i=0;i<96;i++){',
+        '    if(i>=traceSteps)break;',
         '    float r=length(p); minRadius=min(minRadius,r);',
         '    if(r<1.0){ captured=true; break; }',
-        '    float ds=clamp(r*0.04,0.018,0.4);',
+        '    float ds=clamp(r*0.052,0.024,0.52);',
         // Schwarzschild null-geodesic curvature in the orbital plane:
         // d2r/dlambda2 = -(3/2) rs h^2 r/r^5, with rs=1.
         '    vec3 accel=-1.5*h2*p/max(pow(r,5.0),0.00001);',
@@ -1097,6 +1073,11 @@
   // and distances. No photographic nebula textures or camera-facing cards.
   const deepSkyRenderer=new window.GodmanDeepSkyRenderer(THREE),deepSkyObjects=[];
   let deepSkyVisibility=0;
+  // A single GPU batch supplies a sparse extragalactic background. It follows
+  // the observer position, so deep space continues naturally without a visible
+  // rectangular wall or a reachable end-of-universe shell.
+  const cosmicBackdrop=deepSkyRenderer.createCosmicBackdrop({count:18000,radius:5e22,seed:0x5a17c9e3});
+  scene.add(cosmicBackdrop);
   function deepSkyPosition(raDeg,decDeg,distanceLy){
     const ra=raDeg*Math.PI/180,dec=decDeg*Math.PI/180;
     return V3(Math.cos(dec)*Math.cos(ra),Math.sin(dec),Math.cos(dec)*Math.sin(ra)).multiplyScalar(distanceLy*LYS);
@@ -1108,6 +1089,12 @@
   function addStarCluster(spec){
     spec.center=deepSkyPosition(spec.ra,spec.dec,spec.distanceLy);spec.radius*=LYS;
     const body=deepSkyRenderer.createCluster(spec,track);deepSkyObjects.push(body);return body;
+  }
+  function addGalaxy(spec){
+    if(spec.planetsPerStar==null)spec.planetsPerStar=3;
+    if(!spec.estimatedStars)spec.estimatedStars=Math.round((2e9+Math.pow(spec.radius/52000,2)*7.5e10)/1e8)*1e8;
+    spec.center=deepSkyPosition(spec.ra,spec.dec,spec.distanceLy);spec.radius*=LYS;
+    const body=deepSkyRenderer.createGalaxy(spec,track);deepSkyObjects.push(body);return body;
   }
   addNebula({name:'Orion Nebula',aliases:['M42','NGC 1976','stellar nursery'],ra:83.8208,dec:-5.3911,distanceLy:1500,radius:6.5,
     colorA:0xd64b42,colorB:0x79bfff,dustColor:0x09070c,seed:11.2,mode:0,source:'NASA Hubble'});
@@ -1126,7 +1113,142 @@
   addStarCluster({name:'Omega Centauri',aliases:['NGC 5139','Caldwell 80','globular cluster'],ra:201.7065,dec:-47.4924,distanceLy:17700,radius:75,
     bodyType:'GLOBULAR CLUSTER',count:1800,seed:5139,warm:0xffb68d,cool:0xc9dcff,globular:true,source:'NASA Hubble'});
 
+  // ===== THE MILKY WAY — the Solar System begins inside this structure =====
+  // Current estimates span roughly 100–400 billion physical stars. Rendering
+  // every one is neither visible nor practical, so 2.4 million deterministic
+  // stellar samples reproduce the disk, bar, bulge, arms, dust and thickness.
+  // A 180k resident subset is used from within the disk; the full population
+  // streams only after the player leaves far enough to see the whole silhouette.
+  const milkyToSun=blackhole.center.clone().multiplyScalar(-1).normalize();
+  const milkyNormal=new THREE.Vector3(0,1,0).cross(milkyToSun).normalize();
+  const milkyQuaternion=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),milkyNormal);
+  const milkyWay=deepSkyRenderer.createGalaxy({
+    name:'Milky Way Galaxy',aliases:['Milky Way','our galaxy','home galaxy'],center:blackhole.center.clone(),
+    distanceLy:26000,radius:52000*LYS,bodyType:'BARRED SPIRAL GALAXY',count:2400000,
+    initialCount:24000,residentCount:150000,capacityLimit:260000,estimatedStars:200000000000,planetsPerStar:3,homeGalaxy:true,
+    arms:4,twist:6.15,thickness:.012,ellipticity:.96,bulgeFraction:.145,bulgeHeight:.42,barStrength:.78,seed:1001,
+    quaternion:milkyQuaternion,core:0xffd1a0,arm:0xa8c8ff,dust:0x423c46,source:'NASA / ESA estimate'
+  },track);
+  deepSkyObjects.push(milkyWay);
+
   // ===== REAL GALAXIES at their true distances =====
+  // Each galaxy is a navigable 3D stellar distribution with spiral structure,
+  // a central bulge, dust lanes and measurable thickness—not a billboard.
+  addGalaxy({name:'Large Magellanic Cloud',aliases:['LMC','Milky Way satellite galaxy'],ra:80.8942,dec:-69.7561,distanceLy:163000,radius:7000,
+    bodyType:'IRREGULAR GALAXY',count:420000,arms:3,twist:2.3,thickness:.12,ellipticity:.78,bulgeFraction:.08,seed:163,rotationX:.58,rotationZ:-.31,core:0xffc59d,arm:0x9fc8ff,source:'NASA'});
+  addGalaxy({name:'Small Magellanic Cloud',aliases:['SMC','Milky Way satellite galaxy'],ra:13.1583,dec:-72.8003,distanceLy:200000,radius:3500,
+    bodyType:'DWARF GALAXY',count:250000,arms:2,twist:1.7,thickness:.18,ellipticity:.62,bulgeFraction:.12,seed:200,rotationX:-.42,rotationZ:.73,core:0xffcfaa,arm:0x9dbfff,source:'NASA'});
+  addGalaxy({name:'Andromeda Galaxy',aliases:['M31','Messier 31','NGC 224','nearest major galaxy'],ra:10.6847,dec:41.269,distanceLy:2500000,radius:130000,
+    count:900000,arms:4,twist:6.2,thickness:.026,ellipticity:.9,bulgeFraction:.25,seed:31,rotationX:1.34,rotationZ:.66,core:0xffd3a0,arm:0xa9c9ff,source:'NASA Hubble'});
+  addGalaxy({name:'Triangulum Galaxy',aliases:['M33','Messier 33','NGC 598'],ra:23.4621,dec:30.6602,distanceLy:3000000,radius:30000,
+    count:650000,arms:3,twist:7.1,thickness:.035,ellipticity:.96,bulgeFraction:.1,seed:33,rotationX:.94,rotationZ:.4,core:0xffc58d,arm:0x8fc4ff,source:'NASA Hubble'});
+  addGalaxy({name:'Sculptor Galaxy',aliases:['NGC 253','Silver Coin Galaxy'],ra:11.888,dec:-25.2882,distanceLy:11400000,radius:45000,
+    count:480000,arms:4,twist:6.8,thickness:.03,ellipticity:.88,bulgeFraction:.2,seed:253,rotationX:1.22,rotationZ:-.28,core:0xffc98e,arm:0x9fc1e8,source:'NASA'});
+  addGalaxy({name:"Bode's Galaxy",aliases:['M81','Messier 81','NGC 3031'],ra:148.8882,dec:69.0653,distanceLy:12000000,radius:45000,
+    count:500000,arms:3,twist:6.4,thickness:.027,ellipticity:.92,bulgeFraction:.24,seed:81,rotationX:1.03,rotationZ:.5,core:0xffd0a0,arm:0xa9c7ef,source:'NASA Hubble'});
+
+  // Ninety-three additional galaxies bring the navigable total to 100. They
+  // follow filament-like sightlines and logarithmic distance layers instead of
+  // occupying a spherical boundary. Each contains a deterministic million-
+  // scale stellar catalogue but begins with a 512-point distant LOD.
+  (function buildDeepFieldGalaxies(){
+    let state=0x6d2b79f5;
+    const random=()=>{state=(Math.imul(state,1664525)+1013904223)>>>0;return state/4294967296;};
+    const filamentDirections=[];
+    for(let f=0;f<12;f++){
+      const ra=(f*137.507764+random()*18)%360;
+      const dec=Math.asin(random()*1.7-.85)*180/Math.PI;
+      filamentDirections.push([ra,dec]);
+    }
+    const kinds=['SPIRAL GALAXY','BARRED SPIRAL GALAXY','ELLIPTICAL GALAXY','DWARF GALAXY'];
+    for(let i=0;i<93;i++){
+      const filament=i%filamentDirections.length,layer=Math.floor(i/filamentDirections.length);
+      const base=filamentDirections[filament];
+      const ra=(base[0]+(random()-.5)*(7+layer*1.8)+360)%360;
+      const dec=Math.max(-84,Math.min(84,base[1]+(random()-.5)*(5+layer*1.5)));
+      const distanceLy=1.6e7*Math.pow(2.08,layer)*(0.82+random()*.36);
+      const radius=7000+Math.pow(random(),.58)*125000;
+      const estimatedStars=Math.round((2e9+Math.pow(radius/52000,2)*7.5e10)/1e8)*1e8;
+      const samples=Math.round(140000+random()*860000);
+      const kind=kinds[Math.min(kinds.length-1,Math.floor(random()*kinds.length))];
+      addGalaxy({name:'Deep Field G-'+String(i+1).padStart(3,'0'),aliases:['GDF-'+String(i+1).padStart(3,'0'),'deep field galaxy'],
+        ra:ra,dec:dec,distanceLy:distanceLy,radius:radius,bodyType:kind,count:samples,initialCount:512,
+        estimatedStars:estimatedStars,planetsPerStar:3,arms:kind==='ELLIPTICAL GALAXY'?2:2+Math.floor(random()*4),
+        twist:kind==='ELLIPTICAL GALAXY'?1.2:4.8+random()*3.4,thickness:kind==='DWARF GALAXY'?.11:.018+random()*.035,
+        ellipticity:kind==='ELLIPTICAL GALAXY'?.62+random()*.24:.86+random()*.13,
+        bulgeFraction:kind==='ELLIPTICAL GALAXY'?.58:.08+random()*.24,bulgeHeight:kind==='ELLIPTICAL GALAXY'?.82:.42,
+        barStrength:kind==='BARRED SPIRAL GALAXY'?.72:0,
+        seed:1700+i*31,rotationX:random()*Math.PI,rotationY:random()*Math.PI,rotationZ:random()*Math.PI,
+        core:random()>.45?0xffc893:0xffe0bd,arm:random()>.45?0x9fc5ff:0xc1d3ff,dust:0x443b43,
+        source:'Procedural cosmological catalogue'});
+    }
+  })();
+
+  // Every sampled Milky Way star deterministically owns three planets. Only
+  // the nearest system is expanded into full meshes, gravity bodies and orbits;
+  // the pool is reassigned after the player travels into another stellar cell.
+  // This keeps millions of potential systems navigable without millions of
+  // simultaneous planet meshes, lights, labels and physics calculations.
+  const streamedSystemCenter=V3(.31,.18,-.93).normalize().multiplyScalar(18*LYS);
+  const streamedStar=addStar({name:'Milky Way Local 000',bodyType:'PROCEDURAL STAR',r:5.8e7,g:250,
+    center:streamedSystemCenter,tex:sun.tex,temperature:5450,luminosity:.72,
+    glowInner:'rgba(255,235,190,1)',glowMid:'rgba(255,165,80,.38)'});
+  streamedStar.searchAliases=['generated star','local milky way star','procedural system'];
+  streamedStar.archiveData={source:'Milky Way deterministic stellar stream',planets:3};
+  const streamedPlanets=[
+    addPlanet({name:'Milky Way Local 000 b',bodyType:'PROCEDURAL PLANET',r:.78*RE,g:7.8,center:orbitPos(streamedStar.center,.31*AU,20,2),tex:rocky('#6d5548',['#8b6b58','#433a37','#a17c62'],26,null,32),props:'rocky',propColor:0x6d5548}),
+    addPlanet({name:'Milky Way Local 000 c',bodyType:'PROCEDURAL PLANET',r:1.04*RE,g:10.1,center:orbitPos(streamedStar.center,.82*AU,150,4),tex:rocky('#536c69',['#76918a','#304a48','#9aa99d'],34,null,36),atmosphere:0x668a94,props:'rocky',propColor:0x536c69}),
+    addPlanet({name:'Milky Way Local 000 d',bodyType:'PROCEDURAL PLANET',r:1.42*RE,g:13.2,center:orbitPos(streamedStar.center,1.74*AU,270,7),tex:banded(['#93836c','#665c52','#b3a087','#514b48'],null),bump:false,props:'giant',propColor:0x776b5d})
+  ];
+  setMotion(streamedStar,620);
+  setMotion(streamedPlanets[0],31,streamedStar,63,.31*AU,20,2);
+  setMotion(streamedPlanets[1],23,streamedStar,271,.82*AU,150,4);
+  setMotion(streamedPlanets[2],15,streamedStar,836,1.74*AU,270,7);
+  for(const planet of streamedPlanets){planet.searchAliases=['generated planet','procedural planet'];planet.archiveData={source:'Deterministic three-planet Milky Way system'};}
+  const milkyInverseQuaternion=milkyQuaternion.clone().invert();
+  const streamedLocal=new THREE.Vector3(),streamedCandidate=new THREE.Vector3(),streamedBest=new THREE.Vector3();
+  let streamedCellKey='initial',streamedLastCheck=-99;
+  function cellHash(x,y,z,salt){
+    let n=(Math.imul(x,73856093)^Math.imul(y,19349663)^Math.imul(z,83492791)^Math.imul(salt||1,2654435761))|0;
+    n=Math.imul(n^(n>>>15),2246822519);n=Math.imul(n^(n>>>13),3266489917);return ((n^(n>>>16))>>>0)/4294967296;
+  }
+  function updateStreamedMilkySystem(now){
+    if(now-streamedLastCheck<1.25)return;streamedLastCheck=now;
+    const locked=target===streamedStar||streamedPlanets.includes(target);
+    if(locked||pos.distanceTo(streamedStar.center)<80*LYS)return;
+    streamedLocal.copy(pos).sub(milkyWay.center).applyQuaternion(milkyInverseQuaternion);
+    const galaxyRadius=milkyWay.r,radial=Math.hypot(streamedLocal.x,streamedLocal.z)/galaxyRadius;
+    if(radial>1.03||Math.abs(streamedLocal.y)>galaxyRadius*.055)return;
+    const cellSize=24*LYS,cx=Math.floor(streamedLocal.x/cellSize),cy=Math.floor(streamedLocal.y/cellSize),cz=Math.floor(streamedLocal.z/cellSize);
+    let bestDistance=Infinity,bx=0,by=0,bz=0,found=false;
+    for(let x=cx-2;x<=cx+2;x++)for(let y=cy-2;y<=cy+2;y++)for(let z=cz-2;z<=cz+2;z++){
+      const occupancy=.2+.34*Math.max(0,1-radial);
+      if(cellHash(x,y,z,7)>occupancy)continue;
+      streamedCandidate.set((x+cellHash(x,y,z,11))*cellSize,(y+cellHash(x,y,z,13))*cellSize,(z+cellHash(x,y,z,17))*cellSize);
+      const rr=Math.hypot(streamedCandidate.x,streamedCandidate.z)/galaxyRadius;
+      const halfThickness=galaxyRadius*(.008+.012*Math.max(0,1-rr));
+      if(rr>1||Math.abs(streamedCandidate.y)>halfThickness)continue;
+      const distance=streamedCandidate.distanceToSquared(streamedLocal);
+      if(distance<bestDistance){bestDistance=distance;streamedBest.copy(streamedCandidate);bx=x;by=y;bz=z;found=true;}
+    }
+    if(!found)return;
+    const key=bx+':'+by+':'+bz;if(key===streamedCellKey)return;streamedCellKey=key;
+    const systemNumber=(Math.abs(Math.imul(bx,961748927)^Math.imul(by,982451653)^Math.imul(bz,776531419))%999999)+1;
+    const systemName='Milky Way '+String(systemNumber).padStart(6,'0');
+    streamedBest.applyQuaternion(milkyQuaternion).add(milkyWay.center);
+    streamedStar.center.copy(streamedBest);streamedStar.prevCenter.copy(streamedBest);streamedStar.name=systemName;
+    streamedStar.archiveData={source:'Milky Way deterministic stellar stream',planets:3,cell:key};
+    if(streamedStar.labelEntry)streamedStar.labelEntry.w.copy(streamedStar.center).addScaledVector(streamedStar.spinAxis,streamedStar.r*1.8);
+    const orbitRadii=[.31*AU,.82*AU,1.74*AU];
+    for(let i=0;i<streamedPlanets.length;i++){
+      const planet=streamedPlanets[i],angle=cellHash(bx,by,bz,31+i)*Math.PI*2;
+      planet.name=systemName+' '+String.fromCharCode(98+i);planet.orbit.ang=angle;
+      planet.center.set(streamedStar.center.x+orbitRadii[i]*Math.cos(angle),streamedStar.center.y,streamedStar.center.z+orbitRadii[i]*Math.sin(angle));
+      planet.prevCenter.copy(planet.center);planet.archiveData={source:'Deterministic three-planet Milky Way system',host:systemName};
+      if(planet.labelEntry)planet.labelEntry.w.copy(planet.center).addScaledVector(planet.spinAxis,planet.r*1.8);
+    }
+  }
+
   // ---------- Real NASA-derived textures (async, graceful fallback) ----------
   function installEarthNight(texture) {
     texture.encoding = THREE.sRGBEncoding;
@@ -1652,7 +1774,17 @@
 
   // High-detail EVA suit assembled from smooth, shaped components while
   // retaining the lightweight articulated rig used by the game animation.
-  (function buildAstronaut() {
+  function buildAstronautPrevious() {
+    const fabricColor = canvasTex((x,w,h)=>{
+      x.fillStyle='#cbc8bf';x.fillRect(0,0,w,h);
+      for(let y=0;y<h;y+=4){
+        x.fillStyle=y%8?'rgba(255,255,255,.055)':'rgba(38,43,45,.035)';x.fillRect(0,y,w,1);
+      }
+      for(let i=0;i<900;i++){
+        const v=165+Math.floor(Math.random()*45);x.fillStyle=`rgba(${v},${v},${v-3},.08)`;
+        x.fillRect(Math.random()*w,Math.random()*h,1,1);
+      }
+    },128,128);
     const fabricBump = canvasTex((x, w, h) => {
       x.fillStyle = '#888'; x.fillRect(0, 0, w, h);
       for (let i = 0; i < w; i += 4) {
@@ -1664,21 +1796,29 @@
     }, 128, 128);
     fabricBump.wrapS = fabricBump.wrapT = THREE.RepeatWrapping;
     fabricBump.repeat.set(7, 10);
+    fabricColor.wrapS=fabricColor.wrapT=THREE.RepeatWrapping;
+    fabricColor.repeat.set(7,10);fabricColor.encoding=THREE.sRGBEncoding;
 
-    const suit = new THREE.MeshPhysicalMaterial({ color: 0xe2e3df, roughness: 0.78, metalness: 0, clearcoat:.07, clearcoatRoughness:.72, bumpMap: fabricBump, bumpScale: 0.018 });
-    const softShade = new THREE.MeshPhysicalMaterial({ color: 0xb7bbc0, roughness: 0.82, metalness: 0.01, clearcoat:.04, clearcoatRoughness:.8, bumpMap: fabricBump, bumpScale: 0.014 });
-    const seam = new THREE.MeshStandardMaterial({ color: 0x777e84, roughness: 0.82, metalness: 0.06 });
-    const rubber = new THREE.MeshStandardMaterial({ color: 0x171b1e, roughness: 0.72, metalness: 0.04 });
-    const hardware = new THREE.MeshStandardMaterial({ color: 0x555d63, roughness: 0.38, metalness: 0.68 });
-    const gold = new THREE.MeshStandardMaterial({ color: 0xb77a24, roughness: 0.18, metalness: 0.82, emissive: 0x120700 });
-    const visorMat = new THREE.MeshPhysicalMaterial({ color: 0x2a1908, roughness: 0.045, metalness: 0.72, clearcoat: 1, clearcoatRoughness: 0.025, reflectivity:1,transparent:true,opacity:.92,transmission:.045 });
-    const panelMat = new THREE.MeshStandardMaterial({ color: 0x22292d, roughness: 0.48, metalness: 0.32 });
-    const red = new THREE.MeshStandardMaterial({ color: 0x9b2e24, roughness: 0.58 });
-    const lightBlue = new THREE.MeshBasicMaterial({ color: 0x8bd7e8 });
-    const lightAmber = new THREE.MeshBasicMaterial({ color: 0xe6a64d });
-    const skin = new THREE.MeshPhysicalMaterial({color:0x8a5a42,roughness:.64,metalness:0,clearcoat:.03});
+    const suit = new THREE.MeshPhysicalMaterial({ color: 0xf1eee5, map:fabricColor, roughness: 0.76, metalness: 0, clearcoat:.09, clearcoatRoughness:.68, bumpMap: fabricBump, bumpScale: 0.022 });
+    const softShade = new THREE.MeshPhysicalMaterial({ color: 0xaaa9a4, map:fabricColor, roughness: 0.86, metalness: 0, clearcoat:.025, clearcoatRoughness:.9, bumpMap: fabricBump, bumpScale: 0.019 });
+    const seam = new THREE.MeshStandardMaterial({ color: 0x777b79, roughness: 0.92, metalness: 0.01 });
+    const rubber = new THREE.MeshStandardMaterial({ color: 0x090d10, roughness: 0.8, metalness: 0.02 });
+    const hardware = new THREE.MeshPhysicalMaterial({ color: 0x8e9697, roughness: 0.42, metalness: 0.54, clearcoat:.18,clearcoatRoughness:.3 });
+    const ceramic = new THREE.MeshPhysicalMaterial({color:0xe8e4da,roughness:.42,metalness:.04,clearcoat:.46,clearcoatRoughness:.3});
+    const orange = new THREE.MeshPhysicalMaterial({color:0x9c2921,roughness:.62,metalness:.02,clearcoat:.08,clearcoatRoughness:.55});
+    const gold = new THREE.MeshPhysicalMaterial({ color: 0xb57a2b, roughness: 0.12, metalness: 0.9, emissive: 0x100600, clearcoat:.72,clearcoatRoughness:.08 });
+    const visorMat = new THREE.MeshPhysicalMaterial({color:0x87663c,roughness:.035,metalness:.14,clearcoat:1,clearcoatRoughness:.012,reflectivity:1,transparent:true,opacity:.34,transmission:.52,depthWrite:false});
+    const visorGlass = new THREE.MeshPhysicalMaterial({color:0xb8d5de,roughness:.012,metalness:0,transparent:true,opacity:.075,transmission:.9,reflectivity:1,clearcoat:1,clearcoatRoughness:.008,depthWrite:false});
+    const panelMat = new THREE.MeshPhysicalMaterial({ color: 0x11181c, roughness: 0.42, metalness: 0.5, clearcoat:.24,clearcoatRoughness:.3 });
+    const red = new THREE.MeshStandardMaterial({ color: 0xa12d22, roughness: 0.5 });
+    const lightBlue = new THREE.MeshBasicMaterial({ color: 0x80d8e8 });
+    const lightAmber = new THREE.MeshBasicMaterial({ color: 0xffb34f });
+    const skin = new THREE.MeshPhysicalMaterial({color:0xb47f66,roughness:.72,metalness:0,clearcoat:.018});
     const hood = new THREE.MeshStandardMaterial({color:0x07090b,roughness:.96,metalness:0});
-    const eye = new THREE.MeshPhysicalMaterial({color:0x17110d,roughness:.18,clearcoat:1,clearcoatRoughness:.04});
+    const eyeWhite = new THREE.MeshPhysicalMaterial({color:0xe6dfd5,roughness:.42,clearcoat:.15});
+    const eye = new THREE.MeshPhysicalMaterial({color:0x3a2618,roughness:.12,clearcoat:1,clearcoatRoughness:.03});
+    const browMat=new THREE.MeshStandardMaterial({color:0x2b1a13,roughness:.9});
+    const lipMat=new THREE.MeshStandardMaterial({color:0x6f342f,roughness:.78});
 
     function add(parent, mesh, x, y, z) {
       mesh.position.set(x || 0, y || 0, z || 0);
@@ -1731,14 +1871,23 @@
     shell.scale.z = 0.72;
     seamRing(torso, 0.57, 0.08, seam, 0.025);
     seamRing(torso, 0.58, 1.46, hardware, 0.03);
+    // Sculpted ceramic load-bearing plates create a recognizable modern EVA
+    // silhouette while the pressure garment remains visible between them.
+    for(const side of [-1,1]){
+      const torsoPlate=add(torso,roundedBox(.43,.98,.065,.085,softShade),side*.255,.8,-.53);
+      torsoPlate.rotation.z=side*-.055;
+      add(torsoPlate,roundedBox(.04,.68,.018,.014,orange),side*-.15,.02,-.046);
+    }
+    const collarGuard=add(torso,new THREE.Mesh(new THREE.TorusGeometry(.57,.075,16,48,Math.PI*1.5),ceramic),0,1.43,-.02);
+    collarGuard.rotation.x=Math.PI/2;collarGuard.rotation.z=Math.PI*.25;
 
     // Layered chest control unit, connectors, gauges and restraint webbing.
-    const chest = add(torso, roundedBox(0.86, 0.56, 0.2, 0.075, panelMat), 0, 0.83, -0.62);
-    add(chest, roundedBox(0.7, 0.12, 0.035, 0.018, softShade), 0, 0.14, -0.125);
-    const screen = add(chest, roundedBox(0.28, 0.16, 0.035, 0.015, rubber), -0.17, -0.06, -0.125);
+    const chest = add(torso, roundedBox(0.72, 0.46, 0.16, 0.068, panelMat), 0, 0.82, -0.61);
+    add(chest, roundedBox(0.57, 0.09, 0.025, 0.016, softShade), 0, 0.115, -0.1);
+    const screen = add(chest, roundedBox(0.23, 0.13, 0.028, 0.014, rubber), -0.14, -0.045, -0.1);
     add(screen, new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.018, 0.012), lightBlue), 0, 0.02, -0.03);
     add(screen, new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.012, 0.012), lightBlue), -0.03, -0.025, -0.03);
-    for (let i = 0; i < 3; i++) add(chest, new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.025, 16), i === 0 ? red : hardware), 0.17 + i * 0.1, -0.02, -0.13).rotation.x = Math.PI / 2;
+    for (let i = 0; i < 3; i++) add(chest, new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.02, 16), i === 0 ? red : hardware), 0.13 + i * 0.078, -0.015, -0.105).rotation.x = Math.PI / 2;
     const strapL = add(torso, roundedBox(0.07, 1.15, 0.035, 0.02, seam), -0.43, 0.85, -0.53); strapL.rotation.z = -0.12;
     const strapR = add(torso, roundedBox(0.07, 1.15, 0.035, 0.02, seam), 0.43, 0.85, -0.53); strapR.rotation.z = 0.12;
     for (const x of [-0.58, 0.58]) {
@@ -1752,6 +1901,8 @@
       bearing.rotation.y = Math.PI / 2;
       const cover = add(torso, new THREE.Mesh(new THREE.SphereGeometry(0.29, 28, 20), softShade), side * 0.78, 1.18, 0);
       cover.scale.set(0.72, 1, 1);
+      const shoulderArmor=add(torso,new THREE.Mesh(new THREE.SphereGeometry(.285,36,22,0,Math.PI*2,0,Math.PI*.55),suit),side*.8,1.2,0);
+      shoulderArmor.scale.set(.72,.64,.96);shoulderArmor.rotation.z=side*.12;
     }
 
     // Helmet: pressure neck ring, smooth shell, metal locking ring and layered gold visor.
@@ -1760,16 +1911,30 @@
     torso.add(head); rig.head = head;
     const neckRing = add(head, new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.075, 14, 40), hardware), 0, -0.39, 0);
     neckRing.rotation.x = Math.PI / 2;
-    const helmet = add(head, new THREE.Mesh(new THREE.SphereGeometry(0.56, 48, 32), suit), 0, 0.02, 0);
-    helmet.scale.set(0.94, 1.02, 0.94);
+    // Separate rear pressure shell and forward visor dome prevent intersecting
+    // spheres from producing the old jagged black slit at close range.
+    const helmet = add(head, new THREE.Mesh(new THREE.SphereGeometry(0.56,48,32,0,Math.PI,0,Math.PI),ceramic),0,.02,0);
+    helmet.scale.set(.94,1.02,.94);
     const pressureHood=add(head,new THREE.Mesh(new THREE.SphereGeometry(.39,36,24),hood),0,-.035,-.045);
     pressureHood.scale.set(.86,1,.72);
-    const face=add(head,new THREE.Mesh(new THREE.SphereGeometry(.31,36,24),skin),0,-.06,-.155);
-    face.scale.set(.76,.92,.52);
-    for(const side of [-1,1])add(head,new THREE.Mesh(new THREE.SphereGeometry(.025,16,10),eye),side*.085,.005,-.304);
-    const nose=add(head,new THREE.Mesh(new THREE.SphereGeometry(.038,16,10),skin),0,-.055,-.326);nose.scale.set(.7,1.05,.8);
-    const visor = add(head, new THREE.Mesh(new THREE.SphereGeometry(0.49, 48, 28), visorMat), 0, 0.035, -0.205);
-    visor.scale.set(0.9, 0.72, 0.66);
+    const face=add(head,new THREE.Mesh(new THREE.SphereGeometry(.31,40,28),skin),0,-.06,-.155);
+    face.scale.set(.73,.96,.54);face.renderOrder=5;
+    const chin=add(head,new THREE.Mesh(new THREE.SphereGeometry(.11,28,18),skin),0,-.285,-.252);chin.scale.set(1.05,.62,.68);chin.renderOrder=5;
+    for(const side of [-1,1]){
+      const sclera=add(head,new THREE.Mesh(new THREE.SphereGeometry(.031,20,14),eyeWhite),side*.081,.012,-.315);
+      sclera.scale.set(1.15,.62,.45);sclera.renderOrder=6;
+      const iris=add(head,new THREE.Mesh(new THREE.SphereGeometry(.0135,18,12),eye),side*.081,.011,-.335);iris.scale.z=.48;iris.renderOrder=6;
+      const brow=add(head,roundedBox(.105,.016,.018,.007,browMat),side*.081,.071,-.322);brow.rotation.z=side*.08;brow.renderOrder=6;
+      const ear=add(head,new THREE.Mesh(new THREE.SphereGeometry(.045,20,14),skin),side*.225,-.07,-.19);ear.scale.set(.55,1,.5);ear.renderOrder=5;
+    }
+    const nose=add(head,new THREE.Mesh(new THREE.SphereGeometry(.026,22,16),skin),0,-.055,-.348);nose.scale.set(.78,1.08,.58);nose.renderOrder=6;
+    const mouth=add(head,roundedBox(.105,.014,.018,.007,lipMat),0,-.145,-.335);mouth.renderOrder=6;
+    const visorGeometry=new THREE.SphereGeometry(.53,48,30,Math.PI,Math.PI,.16,Math.PI-.32);
+    const visor=add(head,new THREE.Mesh(visorGeometry,visorMat),0,.035,-.015);
+    visor.scale.set(.9,.84,.78);
+    visor.renderOrder=7;
+    const outerVisor=add(head,new THREE.Mesh(new THREE.SphereGeometry(.538,48,30,Math.PI,Math.PI,.16,Math.PI-.32),visorGlass),0,.04,-.022);
+    outerVisor.scale.set(.905,.845,.785);outerVisor.renderOrder=8;
     const visorGold = add(head, new THREE.Mesh(new THREE.TorusGeometry(0.405, 0.035, 10, 48), gold), 0, -0.02, -0.34);
     visorGold.scale.set(1, 0.73, 1); visorGold.rotation.x = 0.05;
     const brow = add(head, roundedBox(0.72, 0.09, 0.08, 0.025, softShade), 0, 0.4, -0.23);
@@ -1777,17 +1942,28 @@
     for (const side of [-1, 1]) {
       add(head, new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.08, 20), hardware), side * 0.48, -0.03, -0.05).rotation.z = Math.PI / 2;
     }
+    const comms=add(head,roundedBox(.13,.18,.08,.03,panelMat),-.48,.13,-.03);
+    add(comms,new THREE.Mesh(new THREE.CircleGeometry(.025,18),lightBlue),0,.035,-.046);
 
     // Portable life-support system with rounded housing, tanks, plumbing and thrusters.
-    const pack = add(torso, roundedBox(1.18, 1.54, 0.58, 0.12, softShade), 0, 0.72, 0.72);
-    const packPanel = add(pack, roundedBox(0.88, 1.15, 0.1, 0.06, hardware), 0, 0.02, 0.34);
-    for (const x of [-0.3, 0.3]) {
-      const tank = add(pack, new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.0, 28), suit), x, 0, 0.44);
-      seamRing(tank, 0.185, 0.32, seam, 0.018); seamRing(tank, 0.185, -0.32, seam, 0.018);
-      add(pack, new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.13, 0.2, 20), rubber), x, -0.68, 0.45);
+    const pack = add(torso, roundedBox(.94, 1.24, .42, .15, suit), 0, .76, .64);
+    const packPanel = add(pack, roundedBox(.68, .84, .06, .07, ceramic), 0, .02, .245);
+    for (const x of [-0.255, 0.255]) {
+      const tank = add(pack, new THREE.Mesh(new THREE.CylinderGeometry(.135,.135,.78,28),softShade),x,0,.205);
+      seamRing(tank,.15,.25,seam,.015);seamRing(tank,.15,-.25,seam,.015);
+      add(pack,new THREE.Mesh(new THREE.CylinderGeometry(.055,.085,.13,20),hardware),x,-.51,.22);
     }
     add(packPanel, roundedBox(0.46, 0.14, 0.025, 0.02, rubber), 0, 0.39, 0.08);
     add(packPanel, new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.025, 0.012), lightBlue), 0, 0.39, 0.105);
+    for(let fin=-2;fin<=2;fin++){
+      const radiator=add(packPanel,new THREE.Mesh(new THREE.BoxGeometry(.64,.035,.035),softShade),0,fin*.16,.075);
+      radiator.rotation.z=.01*fin;
+    }
+    for(const side of [-1,1]){
+      const thruster=add(pack,new THREE.Mesh(new THREE.CylinderGeometry(.075,.11,.18,24),hardware),side*.43,-.58,.29);
+      thruster.rotation.x=Math.PI/2;
+      add(pack,new THREE.Mesh(new THREE.TorusGeometry(.11,.02,10,28),orange),side*.42,.52,.28).rotation.x=Math.PI/2;
+    }
     function hose(points) {
       return new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 28, 0.032, 8, false), rubber);
     }
@@ -1802,13 +1978,21 @@
 
     // Multi-layer articulated arms with fabric bellows and shaped gloves.
     function arm(side) {
-      const sh = new THREE.Group(); sh.position.set(side * 0.84, 1.18, 0); torso.add(sh);
+      const sh = new THREE.Group(); sh.position.set(side * 0.79, 1.18, 0); torso.add(sh);
       const upper = taperedLimb(0.25, 0.205, 0.62, suit); upper.rotation.z = side * 0.03; sh.add(upper);
       seamRing(upper, 0.245, -0.09, seam, 0.018);
+      if(side<0)seamRing(upper,.232,-.3,orange,.038);
+      if(side>0){
+        const missionPatch=add(upper,roundedBox(.16,.12,.018,.018,ceramic),0,-.23,-.225);
+        add(missionPatch,new THREE.Mesh(new THREE.BoxGeometry(.14,.035,.008),red),0,-.035,-.02);
+        add(missionPatch,new THREE.Mesh(new THREE.BoxGeometry(.055,.045,.008),panelMat),-.038,.026,-.02);
+      }
       const el = new THREE.Group(); el.position.set(0, -0.64, 0); sh.add(el);
       const elbowBellows = add(el, new THREE.Mesh(new THREE.SphereGeometry(0.215, 28, 18), seam), 0, 0, 0); elbowBellows.scale.set(1, 0.7, 0.95);
       for (let i = -1; i <= 1; i++) seamRing(el, 0.205 - Math.abs(i) * 0.012, i * 0.055, rubber, 0.012);
       const fore = taperedLimb(0.205, 0.165, 0.56, suit); fore.position.y = -0.02; el.add(fore);
+      const gauntlet=add(el,roundedBox(.31,.34,.12,.055,ceramic),0,-.37,-.18);
+      if(side<0)add(gauntlet,roundedBox(.23,.055,.025,.012,orange),0,.02,-.075);
       seamRing(el, 0.17, -0.57, hardware, 0.022);
       const glove = add(el, roundedBox(0.3, 0.3, 0.24, 0.09, softShade), 0, -0.69, -0.015);
       for (let f = 0; f < 4; f++) {
@@ -1834,23 +2018,185 @@
 
     // Anatomical leg taper, flexible knee bellows, protective pads and bevelled boots.
     function leg(side) {
-      const hip = new THREE.Group(); hip.position.set(side * 0.34, 1.19, 0); player.add(hip);
+      const hip = new THREE.Group(); hip.position.set(side * 0.3, 1.19, 0); player.add(hip);
       const hipSeal = add(hip, new THREE.Mesh(new THREE.SphereGeometry(0.285, 30, 20), seam), 0, 0, 0); hipSeal.scale.set(1, 0.78, 0.92);
       const thigh = taperedLimb(0.285, 0.235, 0.66, suit); thigh.position.y = -0.02; hip.add(thigh);
+      const thighPlate=add(hip,roundedBox(.34,.42,.11,.06,ceramic),0,-.31,-.235);
+      if(side>0)add(thighPlate,roundedBox(.24,.045,.025,.012,orange),0,.11,-.07);
       seamRing(thigh, 0.265, -0.12, seam, 0.018);
       const knee = new THREE.Group(); knee.position.set(0, -0.69, 0); hip.add(knee);
       const kneeBellows = add(knee, new THREE.Mesh(new THREE.SphereGeometry(0.235, 28, 18), seam), 0, 0, 0); kneeBellows.scale.set(1, 0.72, 0.95);
       for (let i = -1; i <= 1; i++) seamRing(knee, 0.225 - Math.abs(i) * 0.012, i * 0.055, rubber, 0.012);
-      add(knee, roundedBox(0.32, 0.22, 0.11, 0.05, softShade), 0, -0.02, -0.22);
+      add(knee, roundedBox(0.34, 0.23, 0.13, 0.055, ceramic), 0, -0.02, -0.22);
       const shin = taperedLimb(0.23, 0.19, 0.58, suit); shin.position.y = -0.04; knee.add(shin);
       seamRing(knee, 0.19, -0.61, hardware, 0.022);
-      const boot = add(knee, roundedBox(0.43, 0.27, 0.68, 0.065, rubber), 0, -0.73, -0.13);
+      const boot = add(knee, roundedBox(0.43, 0.27, 0.68, 0.085, softShade), 0, -0.73, -0.13);
       boot.rotation.x = -0.05;
-      add(boot, roundedBox(0.4, 0.055, 0.7, 0.018, hardware), 0, -0.16, 0);
+      add(boot,roundedBox(.39,.16,.3,.05,ceramic),0,.035,-.3);
+      add(boot, roundedBox(0.4, 0.055, 0.7, 0.018, rubber), 0, -0.16, 0);
       for(let tread=-2;tread<=2;tread++)add(boot,new THREE.Mesh(new THREE.BoxGeometry(.38,.035,.055),rubber),0,-.205,tread*.12);
       return { hip: hip, knee: knee };
     }
     rig.legL = leg(-1); rig.legR = leg(1);
+  }
+  // Reference-inspired expedition suit, built from scratch as a lightweight
+  // articulated Three.js model. It shares no visible geometry with the former
+  // white EVA suit; only the animation rig contract is retained.
+  (function buildEmberAstronaut() {
+    const weave=canvasTex((x,w,h)=>{
+      x.fillStyle='#7a2b14';x.fillRect(0,0,w,h);
+      for(let i=0;i<w;i+=3){x.fillStyle=i%6?'#943a1d':'#542011';x.fillRect(i,0,1,h);}
+      for(let y=0;y<h;y+=5){x.fillStyle='rgba(235,145,85,.10)';x.fillRect(0,y,w,1);}
+    },128,128);
+    weave.wrapS=weave.wrapT=THREE.RepeatWrapping;weave.repeat.set(8,12);
+    const under=new THREE.MeshPhysicalMaterial({color:0xb34920,map:weave,roughness:.86,metalness:.01,clearcoat:.035,clearcoatRoughness:.82});
+    const flex=new THREE.MeshStandardMaterial({color:0x080a0c,roughness:.94,metalness:.01});
+    const joint=new THREE.MeshStandardMaterial({color:0x4e1c11,map:weave,roughness:.94,metalness:.01});
+    const utility=new THREE.MeshPhysicalMaterial({color:0x111417,roughness:.72,metalness:.12,clearcoat:.12,clearcoatRoughness:.56});
+    const armor=new THREE.MeshPhysicalMaterial({color:0xa94420,roughness:.58,metalness:.1,clearcoat:.28,clearcoatRoughness:.35});
+    const armorSoft=new THREE.MeshPhysicalMaterial({color:0x853016,roughness:.7,metalness:.04,clearcoat:.12,clearcoatRoughness:.52});
+    const edge=new THREE.MeshPhysicalMaterial({color:0x272b2d,roughness:.48,metalness:.58,clearcoat:.24,clearcoatRoughness:.34});
+    const bronze=new THREE.MeshPhysicalMaterial({color:0xb86a37,roughness:.3,metalness:.78,clearcoat:.5,clearcoatRoughness:.18});
+    const visorBlack=new THREE.MeshPhysicalMaterial({color:0x010203,roughness:.035,metalness:.68,clearcoat:1,clearcoatRoughness:.008,reflectivity:1});
+    const visorShell=new THREE.MeshPhysicalMaterial({color:0x17242b,roughness:.025,metalness:.18,transparent:true,opacity:.16,transmission:.12,clearcoat:1,clearcoatRoughness:.006,depthWrite:false});
+    const sole=new THREE.MeshStandardMaterial({color:0x020304,roughness:.88,metalness:.05});
+    const statusGlow=new THREE.MeshBasicMaterial({color:0xffb36a});
+
+    function add(parent,mesh,x=0,y=0,z=0){mesh.position.set(x,y,z);parent.add(mesh);return mesh;}
+    function roundedBox(w,h,d,r,material){
+      r=Math.min(r,w*.42,h*.42);const s=new THREE.Shape();
+      s.moveTo(-w/2+r,-h/2);s.lineTo(w/2-r,-h/2);s.quadraticCurveTo(w/2,-h/2,w/2,-h/2+r);
+      s.lineTo(w/2,h/2-r);s.quadraticCurveTo(w/2,h/2,w/2-r,h/2);s.lineTo(-w/2+r,h/2);
+      s.quadraticCurveTo(-w/2,h/2,-w/2,h/2-r);s.lineTo(-w/2,-h/2+r);s.quadraticCurveTo(-w/2,-h/2,-w/2+r,-h/2);
+      const g=new THREE.ExtrudeGeometry(s,{depth:d,bevelEnabled:true,bevelSegments:3,bevelSize:r*.24,bevelThickness:r*.24,curveSegments:7});
+      g.translate(0,0,-d/2);return new THREE.Mesh(g,material);
+    }
+    function lathe(profile,material){return new THREE.Mesh(new THREE.LatheGeometry(profile.map(p=>new THREE.Vector2(p[0],p[1])),44),material);}
+    function ring(parent,r,y,material,t=.018){const m=add(parent,new THREE.Mesh(new THREE.TorusGeometry(r,t,8,32),material),0,y,0);m.rotation.x=Math.PI/2;return m;}
+    function tapered(top,bottom,length,material,depth=.88){
+      const g=new THREE.Group();const core=add(g,new THREE.Mesh(new THREE.CylinderGeometry(top,bottom,length,30,4),material),0,-length/2,0);core.scale.z=depth;
+      const a=add(g,new THREE.Mesh(new THREE.SphereGeometry(top,28,18),material));a.scale.set(1,.48,depth);
+      const b=add(g,new THREE.Mesh(new THREE.SphereGeometry(bottom,28,18),material),0,-length,0);b.scale.set(1,.48,depth);return g;
+    }
+    function armorPanel(parent,w,h,d,x,y,z,rz=0,material=armor){const p=add(parent,roundedBox(w,h,d,Math.min(w,h)*.13,material),x,y,z);p.rotation.z=rz;return p;}
+    function hose(points,r=.022){return new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points),30,r,8,false),flex);}
+
+    // Narrow armored pelvis and equipment belt establish adult human proportions.
+    const pelvis=add(player,lathe([[.35,0],[.44,.08],[.49,.28],[.45,.48],[.36,.56]],under),0,.92,0);pelvis.scale.z=.72;
+    armorPanel(player,.7,.32,.17,0,1.13,-.24,0,armorSoft);
+    const belt=add(player,new THREE.Mesh(new THREE.TorusGeometry(.45,.065,10,42),flex),0,1.48,0);belt.rotation.x=Math.PI/2;belt.scale.z=.77;
+    const buckle=armorPanel(player,.28,.18,.09,0,1.48,-.43,0,edge);armorPanel(buckle,.16,.075,.018,0,0,-.062,0,armor);
+    for(const side of [-1,1]){
+      armorPanel(player,.22,.28,.13,side*.43,1.43,-.05,side*.06,utility);
+      armorPanel(player,.17,.22,.12,side*.35,1.45,.34,side*-.04,utility);
+    }
+
+    // Continuous pressure garment with thin protective chest inserts. Keeping
+    // these surfaces close to the body avoids the segmented robot silhouette.
+    const torso=new THREE.Group();torso.position.set(0,1.55,0);player.add(torso);rig.torso=torso;
+    const abdomen=add(torso,lathe([[.36,0],[.43,.16],[.46,.46],[.52,.78],[.49,1.02],[.4,1.18]],under),0,.05,0);abdomen.scale.z=.7;
+    for(let i=0;i<3;i++)ring(torso,.405+i*.01,.24+i*.15,armorSoft,.01);
+    const chestCore=add(torso,new THREE.Mesh(new THREE.SphereGeometry(.59,44,28),under),0,1.0,-.035);
+    chestCore.scale.set(1,.91,.7);
+    armorPanel(torso,.3,.52,.035,-.2,1.02,-.447,-.1,armor);
+    armorPanel(torso,.3,.52,.035,.2,1.02,-.447,.1,armor);
+    armorPanel(torso,.41,.24,.04,0,.7,-.49,0,under);
+    armorPanel(torso,.3,.17,.038,0,1.31,-.42,0,armor);
+    // Low-profile black restraint harness over the pressure shell.
+    armorPanel(torso,.055,.98,.026,-.22,.99,-.57,-.31,utility);
+    armorPanel(torso,.055,.98,.026,.22,.99,-.57,.31,utility);
+    armorPanel(torso,.62,.052,.026,0,.72,-.585,0,utility);
+    for(const side of [-1,1]){
+      const rail=armorPanel(torso,.04,.98,.02,side*.39,.96,-.575,side*-.13,utility);
+      for(let i=0;i<2;i++)add(rail,new THREE.Mesh(new THREE.CylinderGeometry(.015,.015,.014,12),bronze),0,-.25+i*.5,-.025).rotation.x=Math.PI/2;
+    }
+    const chestModule=armorPanel(torso,.2,.25,.085,0,1.03,-.63,0,utility);
+    armorPanel(chestModule,.075,.09,.018,0,.02,-.055,0,statusGlow);
+
+    // Rounded textile shoulders, with only a thin abrasion cap.
+    for(const side of [-1,1]){
+      const socket=add(torso,new THREE.Mesh(new THREE.SphereGeometry(.275,32,22),under),side*.69,1.22,0);socket.scale.set(.72,1,.86);
+      const cap=add(torso,new THREE.Mesh(new THREE.SphereGeometry(.34,36,24,0,Math.PI*2,0,Math.PI*.56),armorSoft),side*.73,1.3,0);cap.scale.set(.66,.34,.68);cap.rotation.z=side*.18;
+    }
+
+    // A close-fitting dark life-support spine preserves the human back shape;
+    // it does not read as a large toy-like capsule from the normal chase camera.
+    const pack=add(torso,new THREE.Mesh(new THREE.SphereGeometry(.5,40,28),utility),0,.84,.41);
+    pack.scale.set(.5,.72,.24);
+    armorPanel(torso,.24,.58,.045,0,.84,.54,0,utility);
+    for(let i=-2;i<=2;i++)armorPanel(torso,.28,.022,.016,0,.58+i*.12,.57,0,edge);
+    armorPanel(torso,.12,.5,.04,-.19,.84,.52,-.06,utility);
+    armorPanel(torso,.12,.5,.04,.19,.84,.52,.06,utility);
+    for(const side of [-1,1]){
+      const nozzle=add(torso,new THREE.Mesh(new THREE.CylinderGeometry(.05,.075,.14,20),edge),side*.27,.39,.61);nozzle.rotation.x=Math.PI/2;
+    }
+
+    // Large uninterrupted visor and soft orange helmet shell. The convex oval
+    // is a complete front lens rather than a partial sphere, so it stays visible
+    // from normal third-person camera angles.
+    const head=new THREE.Group();head.position.set(0,1.92,0);torso.add(head);rig.head=head;
+    for(let i=0;i<4;i++)ring(head,.315+i*.012,-.38+i*.065,flex,.023);
+    const helmet=add(head,new THREE.Mesh(new THREE.SphereGeometry(.51,56,40),armorSoft),0,.04,.015);helmet.scale.set(.96,1.05,.92);
+    const visor=add(head,new THREE.Mesh(new THREE.SphereGeometry(.46,64,40),visorBlack),0,.045,-.405);visor.scale.set(.95,1.02,.2);
+    const glass=add(head,new THREE.Mesh(new THREE.SphereGeometry(.465,64,40),visorShell),0,.05,-.42);glass.scale.set(.955,1.025,.17);glass.renderOrder=8;
+    const visorRim=add(head,new THREE.Mesh(new THREE.TorusGeometry(.425,.027,12,64),bronze),0,.045,-.43);visorRim.scale.y=1.08;
+    const brow=add(head,new THREE.Mesh(new THREE.TorusGeometry(.432,.016,10,56,Math.PI),armor),0,.06,-.438);brow.rotation.z=Math.PI;
+    const reflection=new THREE.MeshBasicMaterial({color:0xffe2bf,transparent:true,opacity:.2,depthWrite:false,blending:THREE.AdditiveBlending});
+    const visorGlint=add(head,new THREE.Mesh(new THREE.CircleGeometry(.12,32),reflection),-.16,.22,-.505);visorGlint.scale.set(.62,1.5,1);visorGlint.rotation.z=-.32;visorGlint.renderOrder=9;
+    for(const side of [-1,1]){
+      const hinge=add(head,new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,.08,24),bronze),side*.45,.01,0);hinge.rotation.z=Math.PI/2;
+      add(head,hose([V3(side*.35,-.28,.15),V3(side*.49,-.45,.08),V3(side*.43,-.58,-.02)]),0,0,0);
+    }
+
+    // Long, human-proportioned arms with the under-suit visible at the joints.
+    function arm(side){
+      const sh=new THREE.Group();sh.position.set(side*.73,1.22,0);torso.add(sh);
+      const upper=tapered(.215,.18,.66,under,.83);upper.rotation.z=side*.025;sh.add(upper);
+      armorPanel(upper,.28,.38,.045,0,-.25,-.205,side*.025,armorSoft);ring(upper,.205,-.08,armorSoft,.012);
+      const el=new THREE.Group();el.position.set(0,-.68,0);sh.add(el);
+      const elbow=add(el,new THREE.Mesh(new THREE.SphereGeometry(.19,28,18),joint));elbow.scale.set(1,.7,.88);
+      for(let i=-2;i<=2;i++)ring(el,.175-Math.abs(i)*.008,i*.036,joint,.009);
+      const fore=tapered(.18,.145,.6,under,.82);fore.position.y=-.025;el.add(fore);
+      armorPanel(el,.27,.42,.05,0,-.34,-.19,side*.02,armorSoft);
+      ring(el,.15,-.61,utility,.014);
+      const glove=add(el,new THREE.Mesh(new THREE.SphereGeometry(.17,28,20),utility),0,-.73,-.025);glove.scale.set(.9,1.05,.82);
+      for(let f=0;f<4;f++){const finger=add(glove,new THREE.Mesh(new THREE.CylinderGeometry(.021,.018,.13,12),utility),-.07+f*.047,-.15,-.045);finger.rotation.x=-.08;}
+      return {sh,el};
+    }
+    rig.armL=arm(-1);rig.armR=arm(1);rig.armL.sh.rotation.z=-.1;rig.armR.sh.rotation.z=.1;
+
+    // Hidden tool retains the existing laser gameplay while matching the suit.
+    (function buildGun(){
+      const g=new THREE.Group();armorPanel(g,.17,.4,.19,0,-.12,0,0,armor);
+      add(g,new THREE.Mesh(new THREE.CylinderGeometry(.045,.06,.54,22),edge),0,-.54,0);
+      const muzzle=new THREE.Object3D();muzzle.position.y=-.86;g.add(muzzle);g.position.set(0,-.7,0);g.visible=false;rig.armR.el.add(g);rig.gun=g;rig.gunTip=muzzle;
+    })();
+
+    // Long legs, strapped thigh equipment, articulated knees and plated boots.
+    function leg(side){
+      const hip=new THREE.Group();hip.position.set(side*.245,1.18,0);player.add(hip);
+      const hipJoint=add(hip,new THREE.Mesh(new THREE.SphereGeometry(.25,30,20),under));hipJoint.scale.set(1,.75,.82);
+      const thigh=tapered(.25,.205,.72,under,.78);thigh.position.y=-.02;hip.add(thigh);
+      armorPanel(hip,.32,.48,.05,0,-.34,-.205,side*.025,armorSoft);ring(thigh,.225,-.12,armorSoft,.011);
+      const thighPouch=armorPanel(hip,.18,.32,.13,side*.19,-.37,.02,side*.04,utility);
+      ring(thighPouch,.095,-.13,bronze,.012);
+      const knee=new THREE.Group();knee.position.set(0,-.75,0);hip.add(knee);
+      const kneeJoint=add(knee,new THREE.Mesh(new THREE.SphereGeometry(.205,28,18),joint));kneeJoint.scale.set(1,.7,.84);
+      for(let i=-2;i<=2;i++)ring(knee,.19-Math.abs(i)*.008,i*.035,joint,.009);
+      armorPanel(knee,.32,.25,.07,0,-.01,-.2,0,armorSoft);
+      const shin=tapered(.205,.165,.67,under,.78);shin.position.y=-.035;knee.add(shin);
+      armorPanel(knee,.29,.53,.05,0,-.38,-.19,0,armorSoft);ring(knee,.17,-.68,utility,.014);
+      const boot=armorPanel(knee,.37,.25,.61,0,-.8,-.12,0,utility);boot.rotation.x=-.055;
+      armorPanel(boot,.34,.13,.28,0,.02,-.28,0,sole);armorPanel(boot,.39,.055,.64,0,-.15,0,0,sole);
+      for(let i=-2;i<=2;i++)add(boot,new THREE.Mesh(new THREE.BoxGeometry(.36,.03,.045),sole),0,-.19,i*.1);
+      return {hip,knee};
+    }
+    rig.legL=leg(-1);rig.legR=leg(1);
+
+    flame=new THREE.Group();
+    const outer=add(flame,new THREE.Mesh(new THREE.ConeGeometry(.16,.82,22,1,true),new THREE.MeshBasicMaterial({color:0x547dff,transparent:true,opacity:.3,blending:THREE.AdditiveBlending,depthWrite:false})),0,-.28,0);
+    const inner=add(flame,new THREE.Mesh(new THREE.ConeGeometry(.07,.52,18),new THREE.MeshBasicMaterial({color:0xeaf4ff,transparent:true,opacity:.75,blending:THREE.AdditiveBlending,depthWrite:false})),0,-.15,0);
+    outer.rotation.x=inner.rotation.x=Math.PI;flame.position.set(0,-.28,.79);flame.visible=false;torso.add(flame);
   })();
   scene.add(player);
 
@@ -1870,7 +2216,7 @@
   const characterLightTarget = new THREE.Object3D();
   scene.add(characterKey,characterLightTarget);
   characterKey.target = characterLightTarget;
-  const characterRim = new THREE.PointLight(0x86b8ff,0.22,18,2);
+  const characterRim = new THREE.PointLight(0xa9c8e8,0.36,18,2);
   scene.add(characterRim);
   const physicalLighting=new window.GodmanPhysicalLighting(THREE,renderer,CONFIG.lighting,{
     ambient:ambient,sky:skyLight,key:characterKey,rim:characterRim,headlamp:headlamp
@@ -1886,10 +2232,12 @@
   const FUEL_REFILL_GROUND = 60;
   const FUEL_REFILL_AIR = 30;
   const FUEL_REGEN_DELAY = 2.5;
+  const C_WORLD = 29979245.8;
 
   // ---------- State ----------
   const pos = new THREE.Vector3();
   const vel = new THREE.Vector3();
+  const groundMotion = new THREE.Vector3();
   const prevPos = new THREE.Vector3();
   let grounded = true;
   let groundPlanet = earth;
@@ -1908,17 +2256,23 @@
   let takeoffBlend = 0, landingImpact = 0, airborneTime = 0;
   let landingAge=99,landingStrength=0,swimBlend=0;
   const landingSlide=new THREE.Vector3();
+  let flightThrottle=0,flightBrake=0;
   let footstepTravel=0,footprintSide=1;
   let jumpGrace = 0;
   let boostGrace = 0;
   let airCarry = null;   // the planet whose rotating frame we move in
   let lean = 0;
   let target = null;
+  let approachAssist = 0;
+  const approachTo=new THREE.Vector3(),approachDir=new THREE.Vector3();
+  const approachVelocity=new THREE.Vector3(),approachLateral=new THREE.Vector3();
   let finderOpen = false;
   let lastFire = -9;
   const asteroids = [];
   // ---------- Orbital laser (the one science-fiction tool) ----------
-  let laserEquipped = false, laserFiring = false, lastBore = 0, laserBeam = null, laserGlow = null;
+  let laserEquipped = false, laserFiring = false, laserBeam = null, laserGlow = null;
+  let laserHeatTarget=null,laserHeat=0;
+  const LASER_VAPORIZE_TIME=2.6;
   function ensureLaser() {
     if (laserBeam) return;
     const g = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true);
@@ -1935,11 +2289,13 @@
   }
   function toggleLaser() {
     laserEquipped = !laserEquipped; laserFiring = false;
+    laserHeatTarget=null;laserHeat=0;
     const ch = document.getElementById('crosshair');
     if (ch) ch.style.borderColor = laserEquipped ? '#ff3020' : 'rgba(255,255,255,.7)';
     if (rig.gun) rig.gun.visible = laserEquipped;
     if (laserBeam) laserBeam.visible = false;
     if (laserGlow) laserGlow.visible = false;
+    toast(laserEquipped?'Laser armed · hold click to fire':'Laser stowed');
   }
   const booms = [];
   let lastAtmoMat = null;
@@ -2044,6 +2400,8 @@
     pos.copy(p.center).addScaledVector(n, (srL < 0 ? p.r : srL) + PLAYER_FEET);
     prevPos.copy(pos);
     vel.set(0, 0, 0);
+    groundMotion.set(0,0,0);
+    flightThrottle=0;flightBrake=0;
     grounded = true;
     up.copy(n); smoothUp.copy(n);
     earthInWater=p===earth&&earthWaterAtWorld(n);
@@ -2575,7 +2933,7 @@
   }
   function updateEarthTerrain(dt){
     earthTerrain.frame++;earthTerrain.phase+=dt;
-    const altitude=pos.distanceTo(earth.center)-earth.r,active=altitude<2500;
+    const altitude=pos.distanceTo(earth.center)-earth.r,active=!earth.destroyed&&altitude<2500;
     earthTerrain.root.visible=active;if(!active)return;
     const worldN=etWorldN.copy(pos).sub(earth.center).normalize();
     etQ.copy(earth.mesh.quaternion).invert();const localN=etN.copy(worldN).applyQuaternion(etQ).normalize();
@@ -2825,7 +3183,7 @@
   }
   function updateEarthSurfaceTiles(){
     earthSurfaceTiles.frame++;
-    const altitude=pos.distanceTo(earth.center)-earth.r,active=earthElevation.ready&&altitude<5000;
+    const altitude=pos.distanceTo(earth.center)-earth.r,active=!earth.destroyed&&earthElevation.ready&&altitude<5000;
     if(!active){
       for(const tile of earthSurfaceTiles.tiles.values())tile.group.visible=false;
       earthSurfaceTiles.committedKeys.clear();earthSurfaceTiles.pendingKeys.clear();earthSurfaceTiles.pendingSignature='';
@@ -2900,7 +3258,9 @@
     const h = horizDir().clone();
     const right = tmpV2.crossVectors(h, smoothUp).normalize();
     const mv = moveInput(h, right, new THREE.Vector3());
-    vel.copy(dir).multiplyScalar(power).addScaledVector(mv, WALK_SPEED);
+    vel.copy(dir).multiplyScalar(power).add(groundMotion).addScaledVector(mv, WALK_SPEED*.25);
+    groundMotion.set(0,0,0);
+    flightThrottle=0;flightBrake=0;
     grounded = false;
     jumpGrace = 0.25;
     takeoffBlend = 1;
@@ -3020,7 +3380,10 @@
       : pos.clone().sub(blackhole.center).normalize().negate();
     pos.copy(blackhole.center).addScaledVector(outDir, blackhole.r * 2.2);
     prevPos.copy(pos);
-    vel.copy(outDir).multiplyScalar(2e16);
+    // Emerge below light speed so the following frame does not have to erase
+    // an enormous non-physical velocity spike.
+    vel.copy(outDir).multiplyScalar(C_WORLD*.72);
+    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;
     grounded = false;
     airCarry = null;
     groundPlanet = homePlanet();
@@ -3053,6 +3416,7 @@
     landingSlide.copy(relativeLandingVel).addScaledVector(n,-relativeLandingVel.dot(n));
     if(landingSlide.length()>32)landingSlide.setLength(32);
     vel.set(0, 0, 0);
+    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;
     if(!contactPoint){
       const srL = surfaceR(p, n);
       pos.copy(p.center).addScaledVector(n, (srL < 0 ? p.r : srL) + PLAYER_FEET);
@@ -3162,7 +3526,7 @@
     sfxWhoosh(flightT);
   }
 
-  function deformCrater(p, nWorld, size, laser) {
+  function deformCrater(p, nWorld, size) {
     if (p.isStar || p.destroyed) return null;
     const invQ = p.mesh.quaternion.clone().invert();
     const nLocal = nWorld.clone().applyQuaternion(invQ);
@@ -3172,51 +3536,16 @@
       if (c.n.distanceTo(nLocal) * p.r < c.R * 0.9) { cr = c; break; }
     }
 
-    if (!laser) {
-      // Realistic asteroid impact: a wide, shallow bowl. Real craters are only
-      // about a fifth as deep as they are wide — a rock cannot punch through a
-      // planet, so this never pierces, cores, or destroys the world.
-      if (cr) {
-        cr.R = Math.min(p.r * 0.5, cr.R * 1.06);
-        cr.depth = Math.min(cr.R * 0.2, cr.depth * 1.05);
-      } else {
-        const baseR = Math.min(p.r * 0.42, Math.max(p.r * 0.09, (size || 10) * 90));
-        cr = { n: nLocal.clone(), R: baseR, depth: baseR * 0.18 };
-        p.craters.push(cr);
-      }
-      reapplyCraters(p);
-      return cr;
-    }
-
-    // The laser — the only science fiction here. Holding the trigger drills ONE
-    // hole that gets deeper and wider until it punches clean through; the exit
-    // wound opens on the exact far side, so aim at the north pole and you can
-    // fly in the top, straight through the core, and out the bottom.
-    // Find the nearest existing bore so a steady beam keeps deepening one shaft.
-    cr = null;
-    let nearest = Infinity;
-    for (const c of p.craters) {
-      if (!(c.laser || c.pierced)) continue;
-      const d = c.n.distanceTo(nLocal) * p.r;
-      const tol = Math.max(c.R * 1.8, p.r * 0.12);
-      if (d < tol && d < nearest) { nearest = d; cr = c; }
-    }
-    if (!cr) {
-      cr = { n: nLocal.clone(), R: p.r * 0.05, depth: p.r * 0.08, laser: true };
+    // Realistic asteroid impact: a wide, shallow bowl. Laser fire deliberately
+    // never enters this path, so it cannot regenerate mountains, alter collision
+    // terrain, or replace a landing area with a fallback surface material.
+    if (cr) {
+      cr.R = Math.min(p.r * 0.5, cr.R * 1.06);
+      cr.depth = Math.min(cr.R * 0.2, cr.depth * 1.05);
+    } else {
+      const baseR = Math.min(p.r * 0.42, Math.max(p.r * 0.09, (size || 10) * 90));
+      cr = { n: nLocal.clone(), R: baseR, depth: baseR * 0.18 };
       p.craters.push(cr);
-    }
-    if (cr.pierced) {
-      cr.R = Math.min(p.r * 0.24, cr.R + p.r * 0.004);     // keep widening the open tunnel
-      reapplyCraters(p);
-      return cr;
-    }
-    cr.depth = Math.min(p.r * 1.05, cr.depth + p.r * 0.12);  // drill deeper fast
-    cr.R = Math.min(p.r * 0.16, cr.R + p.r * 0.007);          // and a touch wider
-    if (cr.depth >= p.r) {
-      cr.pierced = true;
-      cr.depth = p.r * 1.05;
-      // matching exit hole straight through the core to the antipode
-      p.craters.push({ n: cr.n.clone().negate(), R: Math.max(cr.R, p.r * 0.12), depth: p.r * 1.05, pierced: true, laser: true });
     }
     reapplyCraters(p);
     return cr;
@@ -3481,6 +3810,7 @@
   adaptiveQuality.setPreference(parseFloat(document.getElementById('setQuality').value));
   const frameScratch={
     prevUp:new THREE.Vector3(),h:new THREE.Vector3(),right:new THREE.Vector3(),move:new THREE.Vector3(),
+    groundDesired:new THREE.Vector3(),relativeVel:new THREE.Vector3(),
     groundN:new THREE.Vector3(),targetCross:new THREE.Vector3(),lookTarget:new THREE.Vector3(),
     playerQ:new THREE.Quaternion(),playerForward:new THREE.Vector3(),playerCross:new THREE.Vector3(),
     yawQ:new THREE.Quaternion(),leanQ:new THREE.Quaternion(),overviewQ:new THREE.Quaternion(),overviewDir:new THREE.Vector3(),
@@ -3495,6 +3825,7 @@
     jumpGrace = Math.max(0, jumpGrace - dt);
     boostGrace = Math.max(0, boostGrace - dt);
     rebaseUniverse();
+    updateStreamedMilkySystem(elapsed);
 
     // --- planetary motion: orbits + axial spin at real (compressed) rates ---
     const simdt = dt * TIME_SCALE;
@@ -3644,8 +3975,14 @@
       const speed = earthInWater
         ? 4.4*(keys.ShiftLeft||keys.ShiftRight?1.45:1)*(charging?.55:1)
         : WALK_SPEED*(keys.ShiftLeft||keys.ShiftRight?RUN_MULT:1)*(charging?.35:1);
-      if (mv.lengthSq() > 0) groundSpeedNow = speed;
-      pos.addScaledVector(mv, speed * dt);
+      const desiredGround=frameScratch.groundDesired.copy(mv).multiplyScalar(speed);
+      const changingDirection=groundMotion.lengthSq()>.01&&desiredGround.lengthSq()>.01&&groundMotion.dot(desiredGround)<0;
+      const response=desiredGround.lengthSq()>.01?(changingDirection?10.5:(earthInWater?2.8:5.8)):(earthInWater?3.6:7.5);
+      groundMotion.lerp(desiredGround,1-Math.exp(-response*dt));
+      groundMotion.addScaledVector(preN,-groundMotion.dot(preN));
+      if(groundMotion.lengthSq()<.0004)groundMotion.set(0,0,0);
+      groundSpeedNow=groundMotion.length();
+      pos.addScaledVector(groundMotion,dt);
       if(landingSlide.lengthSq()>.001){
         pos.addScaledVector(landingSlide,dt);
         landingSlide.multiplyScalar(Math.exp(-(earthInWater?6.5:4.2)*dt));
@@ -3654,7 +3991,8 @@
       const srG = surfaceR(groundPlanet, n);
       if (srG < 0) {
         grounded = false; // the ground is gone — fall into the tunnel
-        vel.set(0, 0, 0);
+        vel.copy(groundMotion);
+        groundMotion.set(0,0,0);
       } else {
         const waterNow=groundPlanet===earth&&earthWaterAtWorld(n);
         earthInWater=waterNow;
@@ -3669,7 +4007,7 @@
       }
       up.copy(n);
       prevPos.copy(pos);
-      if (mv.lengthSq() > 0) lastFacing.lerp(mv, 1 - Math.exp(-14 * dt)).normalize();
+      if (groundMotion.lengthSq() > .01) lastFacing.lerp(tmpV3.copy(groundMotion).normalize(), 1 - Math.exp(-12 * dt)).normalize();
       if(groundPlanet===earth&&!earthInWater&&groundSpeedNow>0){
         const stride=(keys.ShiftLeft||keys.ShiftRight)?1.25:.82;
         footstepTravel+=groundSpeedNow*dt;
@@ -3682,23 +4020,35 @@
       // near-surface gravity boost: snappy real-feeling jumps instead of floating
       const gMult = boostGrace > 0 ? 0.1 : 1 + 2.2 * Math.max(0, 1 - distSurf / 250);
       vel.addScaledVector(accel, gMult * dt);
-      const effAccel = Math.max(100, distSurf * 1.0);
-      const effCap = nearestP.blackhole ? Math.max(1e15, distSurf * 2) : Math.max(19500, distSurf * 0.8);
-      const airCtl = Math.max(12, distSurf * 0.2);
+      const nearBlackhole=nearestP.blackhole&&pos.distanceTo(nearestP.center)<nearestP.r*20;
+      const relativeVel=frameScratch.relativeVel;
+      if (nearestP === airCarry) relativeVel.copy(vel);
+      else relativeVel.copy(vel).sub(nearestP.velNow);
+      const currentFlightSpeed=relativeVel.length();
+      const braking=keys.ShiftLeft||keys.ShiftRight;
+      const wantsThrust=keys.Space&&!charging&&fuel>0&&!braking;
+      flightThrottle=damp(flightThrottle,wantsThrust?1:0,wantsThrust?1.35:4.5,dt);
+      flightBrake=damp(flightBrake,braking?1:0,braking?5.5:7.5,dt);
+      // Steering authority grows with velocity, but only as a bounded fraction
+      // of it per second. It can no longer jump because the nearest surface is
+      // suddenly millions of kilometres away.
+      let airCtl=Math.max(12,currentFlightSpeed*.28);
+      if(nearBlackhole)airCtl=Math.min(airCtl,7.5e5);
       vel.addScaledVector(mv, airCtl * dt);
-      if (keys.ShiftLeft || keys.ShiftRight) {
-        // air brake
-        if (nearestP === airCarry || !airCarry) {
-          if (airCarry) vel.multiplyScalar(Math.exp(-2 * dt));
-          else {
-            tmpV3.copy(vel).sub(nearestP.velNow).multiplyScalar(Math.exp(-2 * dt));
-            vel.copy(nearestP.velNow).add(tmpV3);
-          }
-        } else {
-          vel.multiplyScalar(Math.exp(-2 * dt));
+      if (flightBrake>.001) {
+        const drag=Math.exp(-(0.3+flightBrake*2.7)*dt);
+        if(nearestP===airCarry)vel.multiplyScalar(drag);
+        else{
+          tmpV3.copy(vel).sub(nearestP.velNow).multiplyScalar(drag);
+          vel.copy(nearestP.velNow).add(tmpV3);
         }
       }
-      if (keys.Space && !charging && fuel > 0) {
+      if (wantsThrust) {
+        // Exponential cruise acceleration makes interstellar travel possible,
+        // but the throttle itself spools up. Reapplying thrust after braking
+        // therefore resumes continuously instead of changing speed in one frame.
+        let effAccel=Math.max(100,currentFlightSpeed*.72)*flightThrottle;
+        if(nearBlackhole)effAccel=Math.min(effAccel,2.2e6);
         vel.addScaledVector(camDir, effAccel * dt);
         const burn = distSurf > 2e5 ? 4 : 20;
         fuel = Math.max(0, fuel - burn * dt);
@@ -3707,10 +4057,61 @@
       } else if (elapsed - lastThrustTime > FUEL_REGEN_DELAY) {
         fuel = Math.min(FUEL_MAX, fuel + FUEL_REFILL_AIR * dt);
       }
+
+      // Target-assisted arrival. A T/F lock now predicts the intercept several
+      // seconds ahead and begins braking while there is still enough distance.
+      // Planets settle to a walking-speed touchdown; stars stop at a safe
+      // observation radius because their visible surface cannot be landed on.
+      let assistActive=false;
+      const assistBody=target&&!target.catalogOnly&&!target.destroyed&&!target.blackhole&&target.mesh?target:null;
+      if(assistBody){
+        approachTo.copy(assistBody.center).sub(pos);
+        const centerDistance=approachTo.length();
+        if(centerDistance>1e-5){
+          approachDir.copy(approachTo).divideScalar(centerDistance);
+          if(assistBody===airCarry)approachVelocity.copy(vel);
+          else approachVelocity.copy(vel).sub(assistBody.velNow);
+          const closingSpeed=approachVelocity.dot(approachDir);
+          const safeRadius=assistBody.deadly?assistBody.r*3.4:assistBody.r+PLAYER_FEET;
+          const remaining=Math.max(0,centerDistance-safeRadius);
+          if(closingSpeed>1){
+            // Exponential braking covers roughly velocity/rate metres. A
+            // five-second look-ahead remains stable even at interstellar speed.
+            const interceptSpeed=Math.max(closingSpeed,approachVelocity.length()*.45);
+            const leadDistance=interceptSpeed*5.2+Math.max(assistBody.r*.18,120);
+            const urgency=THREE.MathUtils.clamp(1-remaining/Math.max(leadDistance,1),0,1);
+            if(urgency>0||remaining<Math.max(assistBody.r*.3,5000)){
+              assistActive=true;
+              const nearZone=Math.max(assistBody.r*.16,5000);
+              // Preserve fast travel until braking is required, then converge
+              // on a short arrival time instead of crawling for minutes.
+              let desiredClosing=remaining;
+              if(remaining<nearZone){
+                desiredClosing=(assistBody.deadly?0:2.8)+remaining/.55;
+              }
+              desiredClosing=Math.max(assistBody.deadly?0:2.8,Math.min(closingSpeed,desiredClosing));
+              const brakeRate=6+urgency*12+(remaining<nearZone?2:0);
+              const correctedClosing=damp(closingSpeed,desiredClosing,brakeRate,dt);
+              approachLateral.copy(approachVelocity).addScaledVector(approachDir,-closingSpeed);
+              const alignRate=.35+urgency*4.8+(remaining<nearZone?1.6:0);
+              approachLateral.multiplyScalar(Math.exp(-alignRate*dt));
+              approachVelocity.copy(approachDir).multiplyScalar(correctedClosing).add(approachLateral);
+              if(assistBody===airCarry)vel.copy(approachVelocity);
+              else vel.copy(assistBody.velNow).add(approachVelocity);
+              approachAssist=damp(approachAssist,Math.max(.12,urgency),7,dt);
+            }
+          }
+        }
+      }
+      if(!assistActive)approachAssist=damp(approachAssist,0,8,dt);
       if (nearestP === airCarry) tmpV3.copy(vel);
       else tmpV3.copy(vel).sub(nearestP.velNow);
-      if (tmpV3.length() > effCap) {
-        tmpV3.setLength(effCap);
+      const speedLimit=nearBlackhole?C_WORLD*.985:Math.min(2.4e21,Math.max(19500,distSurf*.8));
+      const controlledLimit=nearBlackhole||currentFlightSpeed>=2.4e21
+        ? speedLimit:Math.max(speedLimit,currentFlightSpeed*1.015);
+      if (tmpV3.length() > controlledLimit) {
+        const easedSpeed=damp(tmpV3.length(),controlledLimit,nearBlackhole?9:1.2,dt);
+        tmpV3.setLength(easedSpeed);
         if (nearestP === airCarry) vel.copy(tmpV3);
         else vel.copy(nearestP.velNow).add(tmpV3);
       }
@@ -3739,7 +4140,9 @@
           break;
         }
       }
-      if (pos.length() > 1e22) { spawnOn(homePlanet()); }
+      // There is no physical map wall. Floating-origin rebasing keeps travel
+      // numerically stable at intergalactic scales; reset only corrupted state.
+      if (!Number.isFinite(pos.lengthSq())) { spawnOn(homePlanet()); }
     }
 
     // Stream from the final post-physics position. Updating before movement
@@ -4095,6 +4498,7 @@
     // ---- Orbital laser ----
     if (laserEquipped) ensureLaser();
     if (laserBeam) {
+      let vaporizeTarget=null;
       if (laserFiring && laserEquipped && document.pointerLockElement && !overview) {
         let tgt = null, bestT = Infinity;
         for (const p of planets) {
@@ -4108,31 +4512,44 @@
         let endW;
         if (tgt) {
           endW = new THREE.Vector3().copy(pos).addScaledVector(camDir, bestT);
-          const nW = new THREE.Vector3().copy(endW).sub(tgt.center).normalize();
-          if (elapsed - lastBore > 0.05) {
-            lastBore = elapsed;
-            deformCrater(tgt, nW, Math.max(tgt.r * 0.0006, 20), true);
-            const nL = nW.clone().applyQuaternion(tgt.mesh.quaternion.clone().invert());
-            scorchTexture(tgt, nL, Math.max(tgt.r * 0.025, 150));
-          }
+          if(laserHeatTarget!==tgt){laserHeatTarget=tgt;laserHeat=0;}
+          laserHeat=Math.min(LASER_VAPORIZE_TIME,laserHeat+dt);
+          const heat=laserHeat/LASER_VAPORIZE_TIME;
+          // Thermal damage is intentionally independent of terrain geometry.
+          // The beam can destroy a world without rebuilding its mountain chunks
+          // or reintroducing the former blue fallback landing surface.
           laserGlow.visible = true;
           laserGlow.position.copy(endW).sub(pos);
-          const gs = Math.max(tgt.r * 0.02, laserGlow.position.length() * 0.03);
+          const gs = Math.max(1.2,Math.min(tgt.r*.002,2+laserGlow.position.length()*.008));
           laserGlow.scale.set(gs, gs, 1);
+          laserGlow.material.opacity=.62+heat*.38;
+          laserGlow.material.rotation=elapsed*(2.5+heat*5);
+          if(heat>=1)vaporizeTarget=tgt;
         } else {
           endW = new THREE.Vector3().copy(pos).addScaledVector(camDir, 5e6);
           if (laserGlow) laserGlow.visible = false;
+          laserHeat=Math.max(0,laserHeat-dt*1.8);
+          if(laserHeat===0)laserHeatTarget=null;
         }
         const seg = new THREE.Vector3().copy(endW).sub(pos).sub(aR);
         const len = Math.max(seg.length(), 0.001);
         laserBeam.visible = true;
         laserBeam.position.copy(aR);
         laserBeam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), seg.clone().normalize());
-        const rad = Math.max(0.05, len * 0.0012);
+        const rad = Math.max(0.035,Math.min(80,len*.00042));
         laserBeam.scale.set(rad, len, rad);
+        laserBeam.material.opacity=.7+.22*Math.sin(elapsed*38)*Math.sin(elapsed*38);
+        if(vaporizeTarget){
+          destroyPlanet(vaporizeTarget);
+          laserFiring=false;laserHeatTarget=null;laserHeat=0;
+          laserBeam.visible=false;if(laserGlow)laserGlow.visible=false;
+          toast('Planetary target vaporized');
+        }
       } else {
         laserBeam.visible = false;
         if (laserGlow) laserGlow.visible = false;
+        laserHeat=Math.max(0,laserHeat-dt*1.35);
+        if(laserHeat===0)laserHeatTarget=null;
       }
     }
 
@@ -4163,6 +4580,11 @@
       blackhole.lensingMaterial.uniforms.schwarzschildUv.value.copy(blackhole.schwarzschildUv);
       blackhole.lensingMaterial.uniforms.lensDepth.value=Math.max(0,Math.min(1,
         Math.log2(Math.max(1,viewDepth+1))/Math.log2(camera.far+1)));
+      // When the lens fills the display, fewer slightly longer geodesic steps
+      // remove the close-range GPU spike while preserving the analytic shadow
+      // and photon ring. Small distant lenses keep the highest trace quality.
+      blackhole.lensingMaterial.uniforms.traceSteps.value=blackhole.effectRadiusPx>900?72:
+        blackhole.effectRadiusPx>360?82:92;
     }
     for (const l of labels) {
       if (l.body) l.w.set(l.body.center.x, l.body.center.y + l.body.r * 1.8, l.body.center.z);
@@ -4196,7 +4618,8 @@
     fuelBar.style.width = fuel.toFixed(1) + '%';
     if (target) {
       targetBanner.textContent = target.name.toUpperCase() + ' — ' +
-        fmtDist(Math.max(0, pos.distanceTo(target.center) - target.r));
+        fmtDist(Math.max(0, pos.distanceTo(target.center) - target.r)) +
+        (approachAssist>.06?(target.deadly?'  ·  AUTO APPROACH':'  ·  AUTO LAND'):'');
     }
     if (charging) {
       chargeWrap.style.display = 'block';
@@ -4224,13 +4647,13 @@
     if (stylePass) stylePass.uniforms.time.value = elapsed;
     if(blackhole.passActive){
       const effectRadius=blackhole.effectRadiusPx;
-      const desiredScale=effectRadius<96?.35:effectRadius<240?.5:effectRadius<540?.7:.85;
-      const maxCaptureDimension=1600;
+      const desiredScale=effectRadius<96?.34:effectRadius<240?.46:effectRadius<540?.58:.62;
+      const maxCaptureDimension=1280;
       const captureScale=Math.min(desiredScale,maxCaptureDimension/Math.max(
         blackhole.viewportSize.x,blackhole.viewportSize.y));
       const captureWidth=Math.max(1,Math.round(blackhole.viewportSize.x*captureScale));
       const captureHeight=Math.max(1,Math.round(blackhole.viewportSize.y*captureScale));
-      const captureHz=effectRadius>540?60:effectRadius>240?45:30;
+      const captureHz=effectRadius>540?24:effectRadius>240?30:24;
       const refreshCapture=!blackhole.captureReady||
         elapsed-blackhole.lastCaptureTime>=1/captureHz||
         blackhole.captureSize.x!==captureWidth||blackhole.captureSize.y!==captureHeight;
