@@ -74,6 +74,8 @@
   const reliefNormalCache = new WeakMap();
   const labels = [];
   const glows = [];
+  const orbitGuides = [];
+  let universeAnnotationsHidden = false;
   function track(o, w) { renderObjs.push({ o: o, w: w }); scene.add(o); }
 
   const ambient = new THREE.AmbientLight(0x202735, 0.12);
@@ -440,6 +442,9 @@
     }
     const g = new THREE.BufferGeometry().setFromPoints(pts);
     const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0x3a4a66, transparent: true, opacity: 0.3 }));
+    line.userData.universeOrbitGuide = true;
+    line.visible = !universeAnnotationsHidden;
+    orbitGuides.push(line);
     track(line, center.clone());
   }
 
@@ -843,7 +848,7 @@
   stars.push(blackhole); // its gravity joins the stellar fallback field
   (function buildBlackhole() {
     // The visible image is computed every frame by tracing null rays through a
-    // Schwarzschild spacetime in units of the event-horizon radius. This is a
+    // Kerr-aware strong-field approximation in event-horizon units. This is a
     // live simulation, not a texture or pre-rendered black-hole photograph.
     blackhole.mesh.material.visible = false;
     blackhole.diskBands = [];
@@ -859,6 +864,10 @@
         observerDistanceRs: { value: 48 },
         tanHalfFov: { value: 0.577350269 },
         lensDepth: { value: 1 },
+        // Interstellar's final Gargantua imagery used a/M = 0.6.  This value
+        // keeps the recognizable lensed disk while retaining visible Kerr
+        // asymmetry and frame dragging.
+        spin: { value: 0.6 },
         traceSteps: { value: 112 }
       },
       vertexShader: [
@@ -880,6 +889,7 @@
         'uniform float observerDistanceRs;',
         'uniform float tanHalfFov;',
         'uniform float lensDepth;',
+        'uniform float spin;',
         'uniform int traceSteps;',
         'const float PI = 3.141592653589793;',
         'float hash21(vec2 p){',
@@ -904,7 +914,6 @@
         '}',
         'void main(){',
         '  const float extent=18.0;',
-        '  const float criticalImpact=2.598076211;',
         '  vec2 screenUv=gl_FragCoord.xy/max(viewport,vec2(1.0));',
         // The universe uses logarithmic depth, so compare against the captured
         // logarithmic depth texture directly.  This keeps the astronaut and
@@ -929,12 +938,20 @@
         '  float observerLapse=sqrt(max(0.0001,1.0-1.0/observerR));',
         '  float b=localH/max(observerLapse,0.01);',
         '  float h2=b*b;',
+        '  vec3 n=normalize(diskNormal);',
+        // A Kerr shadow is displaced and compressed on its prograde side.
+        // The projected spin tangent selects that side continuously as the
+        // camera moves above, below, or around the equatorial plane.
+        '  vec2 projectedSpin=n.xy;',
+        '  vec2 spinTangent=length(projectedSpin)>.0001?normalize(vec2(-projectedSpin.y,projectedSpin.x)):vec2(1.0,0.0);',
+        '  float spinSide=dot(impact,spinTangent)/max(length(impact),.001);',
+        '  float inclination=sqrt(max(0.0,1.0-n.z*n.z));',
+        '  float criticalImpact=2.598076211-spin*.31*spinSide*inclination;',
         '  float captureAA=max(0.006,0.65/max(viewport.y,1.0)/max(schwarzschildUv.y,1e-8));',
         '  if(observerR>1.5 && b<criticalImpact-captureAA){',
         '    gl_FragColor=vec4(0.0,0.0,0.0,1.0);',
         '    return;',
         '  }',
-        '  vec3 n=normalize(diskNormal);',
         '  float previousPlane=dot(p,n);',
         '  float minRadius=1000.0;',
         '  float opacity=0.0;',
@@ -954,23 +971,36 @@
         '    vec3 midP=p+midRay*(0.5*ds);',
         '    float midR=length(midP);',
         '    vec3 accelMid=-1.5*h2*midP/max(pow(midR,5.0),0.00001);',
+        // Leading gravitomagnetic term: the spin axis drags near-hole rays in
+        // the prograde direction.  The bounded term vanishes rapidly outside
+        // the strong-field region and keeps the mobile integrator stable.
+        '    vec3 frameDrag=spin*.088*h2*cross(n,midP)/max(pow(midR,5.0),0.0001);',
+        '    accelMid+=frameDrag;',
         '    vec3 nextRay=ray+accelMid*ds;',
         '    vec3 nextP=p+midRay*ds;',
         '    float nextPlane=dot(nextP,n);',
-        // Sagittarius A* is fed by a hot, optically thin, geometrically thick
-        // flow rather than a painted flat disk. Integrating emissivity along
-        // the curved path also creates higher-order images naturally.
+        // Gargantua's recognizable shape comes from an optically substantial,
+        // geometrically thin disk.  Detect true ray/plane crossings so the
+        // disk remains continuous even when an adaptive step is wider than it.
         '    vec3 sampleP=(p+nextP)*0.5;',
-        '    vec3 cylindrical=sampleP-n*dot(sampleP,n);',
+        '    float crossed=1.0-step(0.0,previousPlane*nextPlane);',
+        '    float planeDelta=previousPlane-nextPlane;',
+        '    float crossT=clamp(previousPlane/(abs(planeDelta)<.000001?.000001:planeDelta),0.0,1.0);',
+        '    vec3 crossingP=mix(p,nextP,crossT);',
+        '    vec3 diskP=mix(sampleP,crossingP,crossed);',
+        '    vec3 cylindrical=diskP-n*dot(diskP,n);',
         '    float rr=length(cylindrical);',
         '    float height=abs(dot(sampleP,n));',
-        '    float scaleHeight=max(0.12,rr*0.19);',
-        '    float vertical=exp(-0.5*pow(height/scaleHeight,2.0));',
-        '    float radialWindow=smoothstep(1.08,1.55,rr)*(1.0-smoothstep(11.0,17.0,rr));',
+        '    float scaleHeight=.018+rr*.0065;',
+        '    float vertical=max(exp(-0.5*pow(height/scaleHeight,2.0)),crossed);',
+        // For a/M=.6 the prograde ISCO is about 1.9 Schwarzschild radii.  A
+        // soft outer taper avoids a hard artificial rim.
+        '    float radialWindow=smoothstep(1.72,2.02,rr)*(1.0-smoothstep(12.5,17.0,rr));',
         '    if(radialWindow>0.0001 && opacity<0.985){',
         '        vec3 radial=normalize(cylindrical);',
         '        vec3 tangent=normalize(cross(n,radial));',
-        '        float beta=clamp(sqrt(0.5/max(rr-1.0,0.16)),0.0,0.78);',
+        '        float beta=clamp(1.0/(pow(max(rr*2.0,1.0),1.5)+spin),0.0,0.74);',
+        '        beta=max(beta,sqrt(0.5/max(rr-1.0,0.22))*.68);',
         '        float gamma=1.0/sqrt(max(0.01,1.0-beta*beta));',
         '        vec3 photonToObserver=normalize(-midRay);',
         '        float doppler=1.0/(gamma*max(0.12,1.0-dot(tangent*beta,photonToObserver)));',
@@ -978,16 +1008,24 @@
         // Divide by the observer lapse as well as multiplying by the emitter
         // lapse: a nearby player measures the correct local frequency shift.
         '        float shift=clamp(grav*doppler/max(observerLapse,0.08),0.08,2.8);',
-        '        float inflow=pow(3.0/max(rr,1.12),1.65);',
+        '        float inflow=pow(3.0/max(rr,1.12),1.42);',
         '        float density=vertical*radialWindow*inflow;',
         '        float angle=atan(radial.y,radial.x);',
         '        float phase=angle-time*0.18/pow(max(rr,1.0),1.5);',
-        '        float turbulence=0.62+0.38*noise(vec2(phase*4.0+rr*0.72,height*3.1+rr-time*0.035));',
+        // Radial structure dominates real thin disks; weak azimuthal noise
+        // breaks perfect rings without producing the old artificial spokes.
+        '        float broad=noise(vec2(rr*.52-time*.012,phase*.46));',
+        '        float filament=noise(vec2(rr*2.25-time*.038,phase*1.15));',
+        '        float turbulence=.72+.19*broad+.09*filament;',
         '        density*=turbulence;',
-        '        float restTemperature=clamp(pow(inflow,0.25)*0.72,0.12,1.45);',
-        '        vec3 emission=blackbody(restTemperature*shift)*density*pow(shift,3.0);',
-        '        float a=clamp((1.0-exp(-density*ds*0.075)),0.0,0.34);',
-        '        radiance+=(1.0-opacity)*emission*a*5.8;',
+        '        float restTemperature=clamp(pow(inflow,.29)*.74,.22,1.08);',
+        // Preserve real Doppler/gravitational colour shifts, but compress their
+        // intensity contrast as the film did so both sides remain readable.
+        '        float relativisticIntensity=mix(1.0,pow(shift,3.0),.42);',
+        '        vec3 emission=blackbody(restTemperature*mix(1.0,shift,.58))*density*relativisticIntensity;',
+        '        float opticalPath=mix(ds*1.6,2.8,crossed);',
+        '        float a=clamp(1.0-exp(-density*opticalPath),0.0,.88);',
+        '        radiance+=(1.0-opacity)*emission*a*4.8;',
         '        opacity+=(1.0-opacity)*a;',
         '    }',
         '    p=nextP; ray=nextRay; previousPlane=nextPlane;',
@@ -1272,6 +1310,7 @@
   }
   for(const planet of streamedPlanets){
     const line=new THREE.LineLoop(new THREE.BufferGeometry(),streamedOrbitMaterial);
+    line.userData.universeOrbitGuide=true;line.visible=!universeAnnotationsHidden;orbitGuides.push(line);
     line.frustumCulled=true;planet.streamedOrbitLine=line;refreshStreamedOrbitLine(planet);track(line,streamedStar.center);
   }
   const milkyInverseQuaternion=milkyQuaternion.clone().invert();
@@ -2473,6 +2512,269 @@
     const inner=add(flame,new THREE.Mesh(new THREE.ConeGeometry(.07,.52,18),new THREE.MeshBasicMaterial({color:0xeaf4ff,transparent:true,opacity:.75,blending:THREE.AdditiveBlending,depthWrite:false})),0,-.15,0);
     outer.rotation.x=inner.rotation.x=Math.PI;flame.position.set(0,-.28,.79);flame.visible=false;torso.add(flame);
   })();
+
+  // The visible player is a genuinely rigged, authored character. Its source
+  // GLB contains a 94-bone humanoid skeleton (including five articulated
+  // fingers per hand) and motion-captured animation clips. No runtime vertex
+  // classification or synthetic skinning is used here.
+  const proceduralCharacterRoots=player.children.slice();
+  let authoredSuitRoot=null,authoredSuitModel=null,authoredSuitMixer=null;
+  let authoredSuitAction=null,authoredLaserTool=null;
+  const authoredSuitActions={};
+  const authoredSuitBones={};
+  const authoredRepulsors=[];
+  let authoredLocomotionMoving=false,authoredLocomotionRunning=false;
+  let authoredFlightPoseBlend=0,repulsorBlend=0,authoredRepulsorIKWeight=0;
+  const repulsorAxis=new THREE.Vector3(0,-1,0);
+  const repulsorDirection=new THREE.Vector3();
+  const repulsorTargetDirection=new THREE.Vector3();
+  const repulsorAverage=new THREE.Vector3();
+  const repulsorPosition=new THREE.Vector3();
+  const authoredIKBonePosition=new THREE.Vector3();
+  const authoredIKChildPosition=new THREE.Vector3();
+  const authoredIKCurrentDirection=new THREE.Vector3();
+  const authoredIKDesiredDirection=new THREE.Vector3();
+  const authoredIKRight=new THREE.Vector3();
+  const authoredIKForward=new THREE.Vector3();
+  const authoredIKWorldQuaternion=new THREE.Quaternion();
+  const authoredIKParentQuaternion=new THREE.Quaternion();
+  const authoredIKDeltaQuaternion=new THREE.Quaternion();
+  const authoredIKTargetQuaternion=new THREE.Quaternion();
+  const authoredPalmAxis=new THREE.Vector3(0,-1,0);
+  const authoredSoleAxis=new THREE.Vector3(0,-1,0);
+  const authoredPoseEuler=new THREE.Euler();
+  const authoredPoseQuaternion=new THREE.Quaternion();
+  const repulsorLight=new THREE.PointLight(0x65bfff,0,8,2);
+  scene.add(repulsorLight);
+
+  function createAuthoredRepulsor(bone,type,side){
+    if(!bone)return;
+    const locator=new THREE.Object3D();
+    locator.position.set(type==='hand'?12:11,type==='hand'?-1.2:-2.2,side*(type==='hand'?.35:.2));
+    bone.add(locator);
+    const fx=new THREE.Group();fx.visible=false;scene.add(fx);
+    const outerMat=new THREE.MeshBasicMaterial({color:0x2d86ff,transparent:true,opacity:.34,
+      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
+    const innerMat=new THREE.MeshBasicMaterial({color:0xe8fbff,transparent:true,opacity:.9,
+      blending:THREE.AdditiveBlending,depthWrite:false});
+    const outerLength=type==='hand'?.42:.62,innerLength=type==='hand'?.28:.4;
+    const outer=new THREE.Mesh(new THREE.ConeGeometry(type==='hand'?.055:.075,outerLength,18,1,true),outerMat);
+    const inner=new THREE.Mesh(new THREE.ConeGeometry(type==='hand'?.025:.035,innerLength,14),innerMat);
+    outer.position.y=-outerLength*.5;inner.position.y=-innerLength*.5;
+    const ring=new THREE.Mesh(new THREE.TorusGeometry(type==='hand'?.052:.068,.009,8,24),innerMat.clone());
+    ring.rotation.x=Math.PI/2;ring.scale.y=.6;
+    const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:softSprite('rgba(235,252,255,1)','rgba(40,135,255,.05)'),
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));
+    glow.scale.setScalar(type==='hand'?.25:.33);
+    fx.add(outer,inner,ring,glow);
+    authoredRepulsors.push({locator,fx,outer,inner,ring,glow,type,phase:authoredRepulsors.length*1.73});
+  }
+
+  function applyAuthoredPoseOffset(bone,x,y,z,weight){
+    if(!bone||weight<=.001)return;
+    authoredPoseEuler.set(x*weight,y*weight,z*weight,'XYZ');
+    authoredPoseQuaternion.setFromEuler(authoredPoseEuler);
+    bone.quaternion.multiply(authoredPoseQuaternion);
+  }
+
+  function aimAuthoredBoneToward(bone,child,directionWorld,weight){
+    if(!bone||!child||weight<=.001)return;
+    bone.updateWorldMatrix(true,false);child.updateWorldMatrix(true,false);
+    bone.getWorldPosition(authoredIKBonePosition);
+    child.getWorldPosition(authoredIKChildPosition);
+    authoredIKCurrentDirection.copy(authoredIKChildPosition).sub(authoredIKBonePosition);
+    if(authoredIKCurrentDirection.lengthSq()<1e-8)return;
+    authoredIKCurrentDirection.normalize();
+    authoredIKDesiredDirection.copy(directionWorld).normalize();
+    authoredIKDeltaQuaternion.setFromUnitVectors(authoredIKCurrentDirection,authoredIKDesiredDirection);
+    bone.getWorldQuaternion(authoredIKWorldQuaternion);
+    authoredIKTargetQuaternion.copy(authoredIKDeltaQuaternion).multiply(authoredIKWorldQuaternion);
+    if(bone.parent){
+      bone.parent.getWorldQuaternion(authoredIKParentQuaternion).invert();
+      authoredIKTargetQuaternion.premultiply(authoredIKParentQuaternion);
+    }
+    bone.quaternion.slerp(authoredIKTargetQuaternion,THREE.MathUtils.clamp(weight,0,1));
+    bone.updateWorldMatrix(false,true);
+  }
+
+  function aimAuthoredBoneAxis(bone,localAxis,directionWorld,weight){
+    if(!bone||weight<=.001)return;
+    bone.updateWorldMatrix(true,false);
+    bone.getWorldQuaternion(authoredIKWorldQuaternion);
+    authoredIKCurrentDirection.copy(localAxis).applyQuaternion(authoredIKWorldQuaternion).normalize();
+    authoredIKDeltaQuaternion.setFromUnitVectors(authoredIKCurrentDirection,directionWorld);
+    authoredIKTargetQuaternion.copy(authoredIKDeltaQuaternion).multiply(authoredIKWorldQuaternion);
+    if(bone.parent){
+      bone.parent.getWorldQuaternion(authoredIKParentQuaternion).invert();
+      authoredIKTargetQuaternion.premultiply(authoredIKParentQuaternion);
+    }
+    bone.quaternion.slerp(authoredIKTargetQuaternion,THREE.MathUtils.clamp(weight,0,1));
+    bone.updateWorldMatrix(false,true);
+  }
+
+  function updateAuthoredRepulsorIK(weight){
+    if(weight<=.01||repulsorDirection.lengthSq()<.5)return;
+    authoredIKForward.copy(lastFacing).addScaledVector(smoothUp,-lastFacing.dot(smoothUp));
+    if(authoredIKForward.lengthSq()<1e-6)authoredIKForward.copy(camDir).addScaledVector(smoothUp,-camDir.dot(smoothUp));
+    authoredIKForward.normalize();
+    authoredIKRight.crossVectors(authoredIKForward,smoothUp).normalize();
+    for(const side of [-1,1]){
+      const arm=side<0?authoredSuitBones['L_Arm.10']:authoredSuitBones['R_Arm.44'];
+      const elbow=side<0?authoredSuitBones['L_Elbow.11']:authoredSuitBones['R_Elbow.45'];
+      const wrist=side<0?authoredSuitBones['L_Wrist.12']:authoredSuitBones['R_Wrist.46'];
+      const thigh=side<0?authoredSuitBones['L_Thigh.82']:authoredSuitBones['R_Thigh.88'];
+      const knee=side<0?authoredSuitBones['L_Knee.83']:authoredSuitBones['R_Knee.89'];
+      const ankle=side<0?authoredSuitBones['L_Ankle.84']:authoredSuitBones['R_Ankle.90'];
+      authoredIKDesiredDirection.copy(repulsorDirection)
+        .addScaledVector(authoredIKRight,side*.2).addScaledVector(authoredIKForward,-.05).normalize();
+      aimAuthoredBoneToward(arm,elbow,authoredIKDesiredDirection,weight*.76);
+      authoredIKDesiredDirection.copy(repulsorDirection)
+        .addScaledVector(authoredIKRight,side*.055).normalize();
+      aimAuthoredBoneToward(elbow,wrist,authoredIKDesiredDirection,weight*.9);
+      aimAuthoredBoneAxis(wrist,authoredPalmAxis,repulsorDirection,weight);
+      authoredIKDesiredDirection.copy(repulsorDirection)
+        .addScaledVector(authoredIKRight,side*.075).addScaledVector(authoredIKForward,.045).normalize();
+      aimAuthoredBoneToward(thigh,knee,authoredIKDesiredDirection,weight*.72);
+      authoredIKDesiredDirection.copy(repulsorDirection)
+        .addScaledVector(authoredIKRight,side*.025).normalize();
+      aimAuthoredBoneToward(knee,ankle,authoredIKDesiredDirection,weight*.88);
+      aimAuthoredBoneAxis(ankle,authoredSoleAxis,repulsorDirection,weight);
+    }
+  }
+
+  function updateAuthoredRepulsors(dt,active){
+    repulsorBlend=damp(repulsorBlend,active?Math.max(.25,flightThrottle):0,active?9:13,dt);
+    if(!authoredRepulsors.length)return;
+    player.updateMatrixWorld(true);
+    // Exhaust is exactly opposite the force applied by the controller. A
+    // critically damped direction change keeps the emitters stable without
+    // letting their visuals lag behind steering reversals.
+    repulsorTargetDirection.copy(activeThrustDirection).multiplyScalar(-1).normalize();
+    if(repulsorDirection.lengthSq()<.5)repulsorDirection.copy(repulsorTargetDirection);
+    else repulsorDirection.lerp(repulsorTargetDirection,1-Math.exp(-14*dt)).normalize();
+    repulsorAverage.set(0,0,0);
+    let visibleCount=0;
+    for(const r of authoredRepulsors){
+      r.locator.getWorldPosition(repulsorPosition);
+      r.fx.position.copy(repulsorPosition);
+      r.fx.quaternion.setFromUnitVectors(repulsorAxis,repulsorDirection);
+      const strength=repulsorBlend*(r.type==='hand'?.88:1);
+      const pulse=.9+Math.sin(elapsed*31+r.phase)*.08+Math.sin(elapsed*67+r.phase*.7)*.035;
+      r.fx.visible=strength>.015;
+      r.fx.scale.set(pulse,.5+strength*.75,pulse);
+      r.outer.material.opacity=.1+strength*.26;
+      r.inner.material.opacity=.5+strength*.5;
+      r.ring.material.opacity=.4+strength*.6;
+      r.glow.material.opacity=.28+strength*.65;
+      if(r.fx.visible){repulsorAverage.add(repulsorPosition);visibleCount++;}
+    }
+    if(visibleCount){
+      repulsorLight.position.copy(repulsorAverage).multiplyScalar(1/visibleCount);
+      repulsorLight.intensity=repulsorBlend*4.2;
+    }else repulsorLight.intensity=0;
+  }
+  function useAuthoredSuitAction(name,fade=.3,speed=1,delta=.016){
+    const next=authoredSuitActions[name];
+    if(!next)return;
+    if(next===authoredSuitAction){
+      next.timeScale=damp(next.timeScale||speed,speed,5,Math.min(.05,delta));
+      return;
+    }
+    next.reset();
+    next.timeScale=speed;
+    next.setEffectiveWeight(1).play();
+    if(authoredSuitAction)authoredSuitAction.crossFadeTo(next,fade,true);
+    authoredSuitAction=next;
+  }
+  function loadAuthoredAstronaut(){
+    if(!THREE.GLTFLoader)return;
+    const loader=new THREE.GLTFLoader();
+    loader.load('assets/character/rigged-astronaut.glb',gltf=>{
+      const model=gltf.scene;
+      model.traverse(o=>{
+        if(!o.isMesh)return;
+        o.castShadow=true;o.receiveShadow=true;o.frustumCulled=false;
+        const materials=Array.isArray(o.material)?o.material:[o.material];
+        for(const m of materials){
+          if(!m)continue;
+          if(m.color&&m.map){
+            // Tint the authored white fabric toward the burnt-orange suit in
+            // the visual reference while retaining its baked seams, folds,
+            // fasteners, normal map and roughness variation.
+            m.color.set(0xc45a2a);
+          }
+          m.side=THREE.FrontSide;m.transparent=false;m.opacity=1;
+          m.depthWrite=true;m.needsUpdate=true;
+        }
+      });
+      model.updateMatrixWorld(true);
+      const initialBox=new THREE.Box3().setFromObject(model);
+      const initialSize=initialBox.getSize(new THREE.Vector3());
+      const fit=4.48/Math.max(initialSize.y,.001);
+      model.scale.setScalar(fit);model.updateMatrixWorld(true);
+      const box=new THREE.Box3().setFromObject(model);
+      const center=box.getCenter(new THREE.Vector3());
+      model.position.x-=center.x;
+      model.position.z-=center.z;
+      model.position.y+=-.62-box.min.y;
+      // The authored character faces +Z while the controller treats -Z as
+      // forward. Rotate the imported visual once; physics and camera axes stay
+      // untouched.
+      const visual=new THREE.Group();visual.rotation.y=Math.PI;visual.add(model);
+      player.add(visual);
+      authoredSuitRoot=visual;authoredSuitModel=model;
+      for(const root of proceduralCharacterRoots)root.visible=false;
+      authoredSuitMixer=new THREE.AnimationMixer(model);
+      const loadedBones=[];
+      model.traverse(o=>{if(o.isBone){loadedBones.push(o);authoredSuitBones[o.name]=o;}});
+      const canonicalBoneNames=['L_Arm.10','L_Elbow.11','L_Wrist.12','R_Arm.44','R_Elbow.45','R_Wrist.46',
+        'L_Thigh.82','L_Knee.83','L_Ankle.84','R_Thigh.88','R_Knee.89','R_Ankle.90'];
+      for(const expected of canonicalBoneNames){
+        const stem=expected.slice(0,expected.lastIndexOf('.'));
+        authoredSuitBones[expected]=loadedBones.find(b=>b.name===expected||b.name===expected.replace(/\./g,'_')||
+          b.name===stem||b.name.startsWith(stem))||null;
+      }
+      for(const clip of gltf.animations){
+        const key=(clip.name||'').toLowerCase();
+        authoredSuitActions[key]=authoredSuitMixer.clipAction(clip);
+      }
+      // The source contains one locomotion take. Give walking and running
+      // independent mixer actions so their cadence can crossfade instead of
+      // abruptly changing the playback rate of one active action.
+      const locomotionClip=gltf.animations.find(clip=>(clip.name||'').toLowerCase()==='moon_walk');
+      if(locomotionClip){
+        const walkClip=locomotionClip.clone();walkClip.name='ground_walk';
+        const runClip=locomotionClip.clone();runClip.name='ground_run';
+        authoredSuitActions.ground_walk=authoredSuitMixer.clipAction(walkClip);
+        authoredSuitActions.ground_run=authoredSuitMixer.clipAction(runClip);
+      }
+      useAuthoredSuitAction('idle',0,1);
+      createAuthoredRepulsor(authoredSuitBones['L_Wrist.12'],'hand',-1);
+      createAuthoredRepulsor(authoredSuitBones['R_Wrist.46'],'hand',1);
+      createAuthoredRepulsor(authoredSuitBones['L_Ankle.84'],'foot',-1);
+      createAuthoredRepulsor(authoredSuitBones['R_Ankle.90'],'foot',1);
+
+      // Parent the tool to the model's authored wrist bone rather than to an
+      // approximation, so it follows every embedded animation exactly.
+      const toolPivot=new THREE.Group();
+      const wrist=authoredSuitBones['R_Wrist.46'];
+      if(wrist)wrist.add(toolPivot);else visual.add(toolPivot);
+      toolPivot.position.set(.01,.055,.025);toolPivot.rotation.set(0,0,-Math.PI*.5);
+      const toolMat=new THREE.MeshPhysicalMaterial({color:0x15191d,roughness:.38,metalness:.62,clearcoat:.34,clearcoatRoughness:.24});
+      const toolAccent=new THREE.MeshStandardMaterial({color:0xc65b28,roughness:.48,metalness:.22});
+      const body=new THREE.Mesh(new THREE.BoxGeometry(.085,.20,.08),toolMat);body.position.set(0,-.10,.01);toolPivot.add(body);
+      const barrel=new THREE.Mesh(new THREE.CylinderGeometry(.022,.027,.28,18),toolAccent);barrel.position.set(0,-.27,.01);toolPivot.add(barrel);
+      const emitter=new THREE.Object3D();emitter.position.set(0,-.43,.01);toolPivot.add(emitter);rig.gunTip=emitter;
+      authoredLaserTool=toolPivot;authoredLaserTool.visible=laserEquipped;
+      toast('Rigged astronaut · authored motion loaded');
+    },undefined,error=>{
+      // The handcrafted rig remains a complete offline fallback.
+      authoredSuitRoot=null;authoredSuitMixer=null;
+      console.error('Rigged astronaut failed to load',error);
+      toast('Rigged suit unavailable · using local fallback');
+    });
+  }
+  loadAuthoredAstronaut();
   scene.add(player);
 
   // A compact studio-style light rig follows the astronaut. It adds readable
@@ -2498,11 +2800,15 @@
   });
 
   const PLAYER_FEET = 0.3;
-  const WALK_SPEED = 10;
-  const RUN_MULT = 3;
-  const JUMP_MIN = 6;
-  const JUMP_MAX = 12000;
-  const CHARGE_TIME = 1.6;
+  // Human-scale ground locomotion. 1.8 m/s is a purposeful walk; 6.2 m/s is
+  // a sustainable athletic run rather than the previous superhuman 30 m/s.
+  const WALK_SPEED = 1.8;
+  const RUN_SPEED = 6.2;
+  // Human take-off velocity. On Earth this gives roughly 0.35–1.35 m of
+  // ballistic rise; lower-gravity worlds naturally produce higher jumps.
+  const JUMP_MIN = 2.65;
+  const JUMP_MAX = 5.15;
+  const CHARGE_TIME = 1.05;
   const FUEL_MAX = 100;
   const FUEL_REFILL_GROUND = 60;
   const FUEL_REFILL_AIR = 30;
@@ -2526,13 +2832,15 @@
   let camDist = 8, camDistTarget = 8;
   let earthInWater = false;
   const camDir = V3(0, 0, -1);
+  const activeThrustDirection=V3(0,0,-1);
+  const launchBurnDirection=V3(0,1,0);
   const lastFacing = V3(0, 0, -1);
   let walkPhase = 0, squash = 0, wasGrounded = true, groundSpeedNow = 0;
   let takeoffBlend = 0, landingImpact = 0, airborneTime = 0;
   let landingAge=99,landingStrength=0,swimBlend=0;
   const landingSlide=new THREE.Vector3();
   let flightThrottle=0,flightBrake=0;
-  let footstepTravel=0,footprintSide=1;
+  let launchBurnTime=0,launchBurnStrength=0;
   let jumpGrace = 0;
   let airCarry = null;   // the planet whose rotating frame we move in
   let lean = 0;
@@ -2569,6 +2877,7 @@
     const ch = document.getElementById('crosshair');
     if (ch) ch.style.borderColor = laserEquipped ? '#ff3020' : 'rgba(255,255,255,.7)';
     if (rig.gun) rig.gun.visible = laserEquipped;
+    if (authoredLaserTool) authoredLaserTool.visible = laserEquipped;
     if (laserBeam) laserBeam.visible = false;
     if (laserGlow) laserGlow.visible = false;
     toast(laserEquipped?'Laser armed · hold click to fire':'Laser stowed');
@@ -2677,7 +2986,7 @@
     prevPos.copy(pos);
     vel.set(0, 0, 0);
     groundMotion.set(0,0,0);
-    flightThrottle=0;flightBrake=0;
+    flightThrottle=0;flightBrake=0;launchBurnTime=0;launchBurnStrength=0;
     grounded = true;
     up.copy(n); smoothUp.copy(n);
     earthInWater=p===earth&&earthWaterAtWorld(n);
@@ -2686,6 +2995,7 @@
     else fwdRef.set(0, 0, -1).addScaledVector(n, -n.dot(fwdRef)).normalize();
     if (fwdRef.lengthSq() < 1e-6) fwdRef.set(1, 0, 0);
     fwdRef.normalize();
+    lastFacing.copy(fwdRef);
     yaw = 0; pitch = 0.3; charge = 0; charging = false;
     fuel = FUEL_MAX;
     target = null;
@@ -2694,6 +3004,16 @@
 
   // ---------- Input ----------
   const keys = {};
+  function setUniverseAnnotationsHidden(hidden) {
+    universeAnnotationsHidden = !!hidden;
+    for (const line of orbitGuides) line.visible = !universeAnnotationsHidden;
+    for (const entry of labels) if (entry.spr) entry.spr.visible = false;
+    const marker = document.getElementById('youAreHere');
+    if (marker) marker.style.display = (!universeAnnotationsHidden && overview) ? 'block' : 'none';
+    toast(universeAnnotationsHidden
+      ? 'Universe labels and orbit paths hidden'
+      : 'Universe labels and orbit paths visible');
+  }
   addEventListener('keydown', e => {
     if (finderOpen) {
       if (e.code === 'Escape' || (e.code === 'KeyF' && e.target !== document.getElementById('finderSearch'))) {
@@ -2711,6 +3031,7 @@
     if (e.code === 'KeyR') spawnOn(homePlanet());
     if (e.code === 'KeyT' && !e.repeat) toggleTarget();
     if (e.code === 'KeyC' && !e.repeat) toggleOverview();
+    if (e.code === 'KeyH' && !e.repeat) setUniverseAnnotationsHidden(!universeAnnotationsHidden);
     if (e.code === 'KeyM' && !e.repeat) boostParker();
     if (e.code === 'KeyL' && !e.repeat) toggleLaser();
     keys[e.code] = true;
@@ -3351,34 +3672,6 @@
     const base=sampleEarthElevationRaster(earthTileN);
     return earth.r+base+earthFineReliefLocal(earthTileN,base);
   }
-  const surfaceTraces=new window.GodmanSurfaceTraces(THREE,earth.mesh);
-  const traceLocalQ=new THREE.Quaternion(),traceLocalDir=new THREE.Vector3(),traceLocalForward=new THREE.Vector3(),traceLocalRight=new THREE.Vector3();
-  function earthTraceFrame(nWorld,lateral){
-    traceLocalQ.copy(earth.mesh.quaternion).invert();
-    traceLocalDir.copy(nWorld).applyQuaternion(traceLocalQ).normalize();
-    traceLocalForward.copy(lastFacing).applyQuaternion(traceLocalQ);
-    traceLocalForward.addScaledVector(traceLocalDir,-traceLocalForward.dot(traceLocalDir));
-    if(traceLocalForward.lengthSq()<1e-8)traceLocalForward.set(0,1,0).cross(traceLocalDir);
-    traceLocalForward.normalize();
-    if(lateral){
-      traceLocalRight.crossVectors(traceLocalForward,traceLocalDir).normalize();
-      traceLocalDir.addScaledVector(traceLocalRight,lateral/earth.r).normalize();
-      traceLocalForward.addScaledVector(traceLocalDir,-traceLocalForward.dot(traceLocalDir)).normalize();
-    }
-    const base=sampleEarthElevationRaster(traceLocalDir);
-    return earth.r+base+earthFineReliefLocal(traceLocalDir,base);
-  }
-  function stampEarthFootprint(side){
-    if(!earthElevation.ready||earthInWater)return;
-    const nWorld=tmpV3.copy(pos).sub(earth.center).normalize();
-    const radius=earthTraceFrame(nWorld,side*.14);
-    surfaceTraces.addFootprint(traceLocalDir,traceLocalForward,radius,elapsed,side);
-  }
-  function stampEarthLanding(nWorld,strength){
-    if(!earthElevation.ready||earthInWater||strength<.14)return;
-    const radius=earthTraceFrame(nWorld,0);
-    surfaceTraces.addLanding(traceLocalDir,traceLocalForward,radius,elapsed,strength);
-  }
   function earthAlbedoLocal(n,out){
     const id=earth._surfaceData||planetImgData(earth);
     if(!id)return false;
@@ -3612,14 +3905,33 @@
   }
 
   function doJump() {
-    const power = JUMP_MIN + (JUMP_MAX - JUMP_MIN) * charge * charge;
-    const dir = camDir.clone();
-    const rc = dir.dot(up);
-    if (rc < 0.25) dir.addScaledVector(up, 0.25 - rc).normalize();
+    // A jump is a ground-reaction impulse, not a camera-fired projectile.
+    // Preserve running momentum and add a primarily vertical leg impulse;
+    // camera direction only contributes a small, physically plausible lean.
+    const effort=charge*charge*(3-2*charge);
+    const launchSpeed=THREE.MathUtils.lerp(JUMP_MIN,JUMP_MAX,effort);
     const h = horizDir().clone();
     const right = tmpV2.crossVectors(h, smoothUp).normalize();
     const mv = moveInput(h, right, new THREE.Vector3());
-    vel.copy(dir).multiplyScalar(power).add(groundMotion).addScaledVector(mv, WALK_SPEED*.25);
+    const aimTangent=camDir.clone().addScaledVector(up,-camDir.dot(up));
+    if(aimTangent.lengthSq()>1e-6)aimTangent.normalize();else aimTangent.copy(h);
+    const jumpTangent=mv.lengthSq()>.001?mv.normalize():aimTangent;
+    const launchAngle=THREE.MathUtils.lerp(.04,.18,effort);
+    vel.copy(groundMotion).addScaledVector(up,launchSpeed*Math.cos(launchAngle));
+    const desiredTakeoffHorizontal=launchSpeed*Math.sin(launchAngle);
+    const alongJump=vel.dot(jumpTangent);
+    if(alongJump<desiredTakeoffHorizontal)vel.addScaledVector(jumpTangent,desiredTakeoffHorizontal-alongJump);
+    // A charged launch transitions from the leg impulse into a finite
+    // repulsor burn. This preserves a believable first contact while retaining
+    // Solar Jumper's ability to climb out of a planet's gravity well.
+    launchBurnStrength=effort;
+    launchBurnTime=effort>.035?.4+effort*3.2:0;
+    launchBurnDirection.copy(camDir);
+    const radialComponent=launchBurnDirection.dot(up);
+    if(radialComponent<.72)launchBurnDirection.addScaledVector(up,.72-radialComponent);
+    launchBurnDirection.normalize();
+    activeThrustDirection.copy(launchBurnDirection);
+    pos.addScaledVector(up,.025);
     groundMotion.set(0,0,0);
     flightThrottle=0;flightBrake=0;
     grounded = false;
@@ -3751,13 +4063,20 @@
     const relativeLandingVel = p === airCarry ? vel : tmpV2.copy(vel).sub(p.velNow);
     const impactSpeed = Math.max(0, -relativeLandingVel.dot(n));
     earthInWater=p===earth&&earthWaterAtWorld(n);
-    landingImpact = earthInWater ? Math.max(.08,Math.min(.38,impactSpeed/35)) : Math.max(0.12, Math.min(1, (impactSpeed - 1.5) / 22));
+    // Legs absorb ordinary landings over a short compression interval. Impact
+    // animation begins gently below 2 m/s and reaches full depth around the
+    // upper edge of survivable feet-first landing speed.
+    landingImpact = earthInWater
+      ? Math.max(.05,Math.min(.34,impactSpeed/12))
+      : THREE.MathUtils.clamp((impactSpeed-1.4)/7.2,.08,1);
     landingStrength=landingImpact;landingAge=0;
-    if(p===earth&&!earthInWater)stampEarthLanding(n,landingImpact);
-    landingSlide.copy(relativeLandingVel).addScaledVector(n,-relativeLandingVel.dot(n));
-    if(landingSlide.length()>32)landingSlide.setLength(32);
+    const tangentVelocity=landingSlide.copy(relativeLandingVel).addScaledVector(n,-relativeLandingVel.dot(n));
+    if(tangentVelocity.length()>18)tangentVelocity.setLength(18);
+    groundMotion.copy(tangentVelocity);
+    if(groundMotion.length()>RUN_SPEED)groundMotion.setLength(RUN_SPEED);
+    landingSlide.sub(groundMotion);
     vel.set(0, 0, 0);
-    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;
+    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;launchBurnTime=0;launchBurnStrength=0;
     if(!contactPoint){
       const srL = surfaceR(p, n);
       pos.copy(p.center).addScaledVector(n, (srL < 0 ? p.r : srL) + PLAYER_FEET);
@@ -3804,7 +4123,7 @@
       overviewZoomTarget = overviewDist;
     }
     document.getElementById('crosshair').style.display = overview ? 'none' : 'block';
-    document.getElementById('youAreHere').style.display = overview ? 'block' : 'none';
+    document.getElementById('youAreHere').style.display = overview && !universeAnnotationsHidden ? 'block' : 'none';
   }
   // ---------- Asteroid strikes ----------
   function raySphere(o, d, c, R) {
@@ -4168,6 +4487,11 @@
     if (real < 1e7) return (real / 1e3).toFixed(1) + ' km/s';
     return (real / 2.998e8).toFixed(2) + ' c';
   }
+  function fmtLocalSpeed(v){
+    if(v<10)return v.toFixed(1)+' m/s';
+    if(v<1000)return v.toFixed(0)+' m/s';
+    return (v/1000).toFixed(1)+' km/s';
+  }
 
   const rebaseShift = new THREE.Vector3();
   const rebaseSeen = new Set();
@@ -4331,8 +4655,6 @@
       const ds = pos.distanceTo(p.center) - pr;
       if (ds < distSurf) { distSurf = ds; nearestP = p; }
     }
-    surfaceTraces.update(elapsed,nearestP===earth&&distSurf<1800);
-
     if (grounded) {
       up.copy(pos).sub(groundPlanet.center).normalize();
     } else if (distSurf < nearestP.r * 6) {
@@ -4382,7 +4704,7 @@
       swimBlend=damp(swimBlend,earthInWater?1:0,earthInWater?4.5:7,dt);
       const speed = earthInWater
         ? 4.4*(keys.ShiftLeft||keys.ShiftRight?1.45:1)*(charging?.55:1)
-        : WALK_SPEED*(keys.ShiftLeft||keys.ShiftRight?RUN_MULT:1)*(charging?.35:1);
+        : (keys.ShiftLeft||keys.ShiftRight?RUN_SPEED:WALK_SPEED)*(charging?.35:1);
       const desiredGround=frameScratch.groundDesired.copy(mv).multiplyScalar(speed);
       const changingDirection=groundMotion.lengthSq()>.01&&desiredGround.lengthSq()>.01&&groundMotion.dot(desiredGround)<0;
       const response=desiredGround.lengthSq()>.01?(changingDirection?10.5:(earthInWater?2.8:5.8)):(earthInWater?3.6:7.5);
@@ -4393,7 +4715,14 @@
       pos.addScaledVector(groundMotion,dt);
       if(landingSlide.lengthSq()>.001){
         pos.addScaledVector(landingSlide,dt);
-        landingSlide.multiplyScalar(Math.exp(-(earthInWater?6.5:4.2)*dt));
+        landingSlide.addScaledVector(preN,-landingSlide.dot(preN));
+        const slideSpeed=landingSlide.length();
+        // Coulomb-style surface friction removes a fixed amount of speed per
+        // second, unlike exponential damping which made every landing snap.
+        const frictionAccel=Math.max(.8,groundPlanet.g*(earthInWater?1.3:.68));
+        const nextSlideSpeed=Math.max(0,slideSpeed-frictionAccel*dt);
+        if(nextSlideSpeed>0)landingSlide.multiplyScalar(nextSlideSpeed/slideSpeed);
+        else landingSlide.set(0,0,0);
       }else landingSlide.set(0,0,0);
       const n = frameScratch.groundN.copy(pos).sub(groundPlanet.center).normalize();
       const srG = surfaceR(groundPlanet, n);
@@ -4416,15 +4745,9 @@
       up.copy(n);
       prevPos.copy(pos);
       if (groundMotion.lengthSq() > .01) lastFacing.lerp(tmpV3.copy(groundMotion).normalize(), 1 - Math.exp(-12 * dt)).normalize();
-      if(groundPlanet===earth&&!earthInWater&&groundSpeedNow>0){
-        const stride=(keys.ShiftLeft||keys.ShiftRight)?1.25:.82;
-        footstepTravel+=groundSpeedNow*dt;
-        if(footstepTravel>=stride){footstepTravel%=stride;footprintSide*=-1;stampEarthFootprint(footprintSide);}
-      }else footstepTravel=0;
     } else {
       earthInWater=false;
       swimBlend=damp(swimBlend,0,6,dt);
-      footstepTravel=0;
       // Apply the body's configured physical acceleration directly. Earth is
       // 9.81 m/s² at its reference surface and follows inverse-square falloff;
       // no jump grace or near-ground gameplay multiplier alters gravity.
@@ -4435,7 +4758,11 @@
       else relativeVel.copy(vel).sub(nearestP.velNow);
       const currentFlightSpeed=relativeVel.length();
       const braking=keys.ShiftLeft||keys.ShiftRight;
-      const wantsThrust=keys.Space&&!charging&&fuel>0&&!braking;
+      if(braking)launchBurnTime=0;
+      const manualThrust=keys.Space&&!charging&&fuel>0&&!braking;
+      const launchThrust=launchBurnTime>0&&fuel>0&&!braking;
+      const wantsThrust=manualThrust||launchThrust;
+      activeThrustDirection.copy(manualThrust?camDir:launchBurnDirection).normalize();
       flightThrottle=damp(flightThrottle,wantsThrust?1:0,wantsThrust?1.35:4.5,dt);
       flightBrake=damp(flightBrake,braking?1:0,braking?5.5:7.5,dt);
       // Steering authority grows with velocity, but only as a bounded fraction
@@ -4457,8 +4784,14 @@
         // but the throttle itself spools up. Reapplying thrust after braking
         // therefore resumes continuously instead of changing speed in one frame.
         let effAccel=Math.max(100,currentFlightSpeed*.72)*flightThrottle;
+        if(launchThrust){
+          // Full charge reaches the former launch envelope over several smooth
+          // seconds instead of teleporting velocity in the takeoff frame.
+          effAccel=Math.max(effAccel,(900+launchBurnStrength*3300)*flightThrottle);
+          launchBurnTime=Math.max(0,launchBurnTime-dt);
+        }
         if(nearBlackhole)effAccel=Math.min(effAccel,2.2e6);
-        vel.addScaledVector(camDir, effAccel * dt);
+        vel.addScaledVector(activeThrustDirection, effAccel * dt);
         const burn = distSurf > 2e5 ? 4 : 20;
         fuel = Math.max(0, fuel - burn * dt);
         lastThrustTime = elapsed;
@@ -4530,7 +4863,7 @@
       if (mv.lengthSq() > 0) lastFacing.lerp(mv, 1 - Math.exp(-10 * dt)).normalize();
       if (thrusting) {
         // turn smoothly into the thrust direction
-        lastFacing.lerp(camDir, 1 - Math.exp(-8 * dt)).normalize();
+        lastFacing.lerp(activeThrustDirection, 1 - Math.exp(-8 * dt)).normalize();
       }
       // while coasting the heading is kept — no sudden direction snaps
 
@@ -4645,8 +4978,9 @@
     boomLight.position.copy(boomW).sub(pos);
 
     // ---------- Animations ----------
-    flame.visible = thrusting;
-    if (thrusting) flame.scale.set(1, 1.18 + Math.sin(elapsed * 28) * 0.12, 1);
+    // The old backpack nozzle belongs only to the hidden fallback character.
+    // The visible authored astronaut uses hand and foot repulsors below.
+    flame.visible = false;
 
     if (!grounded) airborneTime += dt;
     if (grounded && !wasGrounded) {
@@ -4657,23 +4991,26 @@
     squash *= Math.exp(-5.5 * dt);
     landingAge+=dt;
     if(landingStrength>0){
-      const compression=landingAge<.13
-        ? Math.sin(Math.max(0,landingAge)/.13*Math.PI*.5)
-        : Math.exp(-(landingAge-.13)*5.2);
+      const compressionTime=.15+landingStrength*.07;
+      const compression=landingAge<compressionTime
+        ? Math.sin(Math.max(0,landingAge)/compressionTime*Math.PI*.5)
+        : Math.exp(-(landingAge-compressionTime)*3.7);
       squash=Math.max(squash,landingStrength*compression);
-      if(landingAge>.95)landingStrength=0;
+      if(landingAge>1.35)landingStrength=0;
     }
 
     const leanTarget = earthInWater
       ? .38+Math.min(.42,groundSpeedNow*.055)
       : (!grounded && thrusting)
-      ? 1.25 * (1 - Math.max(0, Math.min(1, camDir.dot(smoothUp))))
+      ? 1.25 * (1 - Math.max(0, Math.min(1, activeThrustDirection.dot(smoothUp))))
       : (!grounded ? 0.25 : 0);
     lean = damp(lean, leanTarget, 5, dt);
 
 
     const k = 10;
-    const runFrac = (keys.ShiftLeft || keys.ShiftRight) ? 1 : 0;
+    const runRequested=grounded&&!earthInWater&&(keys.ShiftLeft||keys.ShiftRight)&&groundSpeedNow>WALK_SPEED*.7;
+    const runFrac=runRequested?Math.max(.3,Math.min(1,
+      (groundSpeedNow-WALK_SPEED*.7)/(RUN_SPEED-WALK_SPEED*.7))):0;
     if (earthInWater) {
       // Alternating arm recovery and flutter kick, with buoyant vertical lag.
       walkPhase+=dt*(groundSpeedNow>0?3.7:1.15);const sw=Math.sin(walkPhase),stroke=Math.sin(walkPhase*.5);
@@ -4797,6 +5134,80 @@
       rig.armR.el.rotation.x = damp(rig.armR.el.rotation.x, 0.05, 12, dt);
     }
 
+    if(authoredSuitRoot&&authoredSuitMixer){
+      let action='idle',actionSpeed=1,fade=.32;
+      if(authoredLocomotionMoving){
+        if(!grounded||earthInWater||groundSpeedNow<.10)authoredLocomotionMoving=false;
+      }else if(grounded&&!earthInWater&&groundSpeedNow>.28)authoredLocomotionMoving=true;
+      if(authoredLocomotionRunning){
+        if(!authoredLocomotionMoving||!runRequested||groundSpeedNow<WALK_SPEED*1.25)authoredLocomotionRunning=false;
+      }else if(authoredLocomotionMoving&&runRequested&&groundSpeedNow>WALK_SPEED*1.45){
+        authoredLocomotionRunning=true;
+      }
+      if(!grounded||earthInWater){
+        action='floating';
+        actionSpeed=thrusting?1.18:(earthInWater?.82:.94);
+        fade=.48;
+      }else if(authoredLocomotionMoving){
+        if(authoredLocomotionRunning){
+          action=authoredSuitActions.ground_run?'ground_run':'moon_walk';
+          const effort=Math.max(0,Math.min(1,(groundSpeedNow-WALK_SPEED)/(RUN_SPEED-WALK_SPEED)));
+          actionSpeed=2.65+effort*.95;
+          fade=.17;
+        }else{
+          action=authoredSuitActions.ground_walk?'ground_walk':'moon_walk';
+          const effort=Math.max(0,Math.min(1,groundSpeedNow/WALK_SPEED));
+          actionSpeed=1.35+effort*.8;
+          fade=.22;
+        }
+      }
+      useAuthoredSuitAction(action,fade,actionSpeed,dt);
+      authoredSuitMixer.update(dt);
+      authoredFlightPoseBlend=damp(authoredFlightPoseBlend,!grounded?(thrusting?1:.38):0,
+        !grounded?4.8:7.5,dt);
+      // Small additive offsets turn the authored floating motion into a stable
+      // four-point repulsor posture without replacing its natural joint motion.
+      // Palms rotate aft, shoulders settle, knees soften and boots align with
+      // the shared exhaust vector; the blend removes any hard pose snap.
+      const fp=authoredFlightPoseBlend;
+      applyAuthoredPoseOffset(authoredSuitBones['L_Arm.10'],0,-.10,.18,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Arm.44'],0,.10,-.18,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['L_Elbow.11'],0,0,-.12,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Elbow.45'],0,0,-.12,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['L_Wrist.12'],0,-.34,.08,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Wrist.46'],0,.34,-.08,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['L_Thigh.82'],.035,0,.025,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Thigh.88'],.035,0,-.025,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['L_Knee.83'],0,0,-.08,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Knee.89'],0,0,-.08,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['L_Ankle.84'],0,0,.1,fp);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Ankle.90'],0,0,.1,fp);
+      // The real rig visibly compresses through its knees during jump loading
+      // and touchdown instead of moving the whole mesh down as a rigid block.
+      const contactPose=grounded?Math.max(charge*.9,squash):0;
+      applyAuthoredPoseOffset(authoredSuitBones['L_Knee.83'],0,0,-.62,contactPose);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Knee.89'],0,0,-.62,contactPose);
+      applyAuthoredPoseOffset(authoredSuitBones['L_Elbow.11'],0,-.11,0,contactPose);
+      applyAuthoredPoseOffset(authoredSuitBones['R_Elbow.45'],0,-.11,0,contactPose);
+
+      // Two-stage directional IK: shoulders/hips place each limb into the
+      // exhaust hemisphere, elbows/knees carry it toward the thrust line, and
+      // the final wrist/ankle correction aims the palm or sole normal exactly
+      // opposite the applied acceleration. This is recomputed every frame, so
+      // a camera reversal moves through a smooth physical arc rather than
+      // leaving emitters attached to a stale pose.
+      authoredRepulsorIKWeight=THREE.MathUtils.clamp(fp*repulsorBlend*1.18,0,1);
+      // The AnimationMixer owns every joint. Only the containing visual group
+      // receives gameplay-scale posture and impact offsets, preserving the
+      // authored skin weights and all finger anatomy.
+      const runLean=grounded&&authoredLocomotionRunning?(.08+runFrac*.08):0;
+      const flightTilt=!grounded?(thrusting?.52:.12):earthInWater?.24:-runLean;
+      authoredSuitRoot.rotation.x=damp(authoredSuitRoot.rotation.x,flightTilt,6.5,dt);
+      authoredSuitRoot.rotation.y=dampAngle(authoredSuitRoot.rotation.y,Math.PI,9,dt);
+      authoredSuitRoot.rotation.z=damp(authoredSuitRoot.rotation.z,0,9,dt);
+      authoredSuitRoot.position.y=damp(authoredSuitRoot.position.y,-charge*.11-squash*.12,10,dt);
+    }
+
     // ---- Player orientation ----
     tmpV.copy(lastFacing).addScaledVector(smoothUp, -lastFacing.dot(smoothUp));
     if (tmpV.lengthSq() > 1e-4) lastFacing.copy(tmpV).normalize();
@@ -4815,6 +5226,10 @@
     // its horizon is far too small to justify the old four-times character
     // stretch. Keep the body rigid until the irreversible capture event.
     player.scale.set(PSCALE, PSCALE * sy, PSCALE);
+    // Solve after the final body orientation so palms, soles and exhaust all
+    // agree in world space even during a rapid steering reversal.
+    updateAuthoredRepulsorIK(authoredRepulsorIKWeight);
+    updateAuthoredRepulsors(dt,thrusting&&!earthInWater);
 
     headlamp.position.copy(smoothUp).multiplyScalar(3);
     const starDistance=pos.distanceTo(illuminationStar.center);
@@ -4895,8 +5310,11 @@
       }
       camera.up.copy(smoothUp);
       camera.lookAt(lookTarget);
-      camera.getWorldDirection(camDir);
     }
+    // C-view used to leave camDir at the last third-person orientation. The
+    // black-hole visibility test then believed the hole was behind the camera
+    // at otherwise valid overview angles and removed the entire lens pass.
+    camera.getWorldDirection(camDir);
 
     // Keep the relativistic ray-tracing surface perpendicular to the view and
     // express the physical disk normal in the shader's camera-aligned frame.
@@ -4980,7 +5398,7 @@
       blackhole.effectRadiusPx=Math.max(
         rsUvX*blackhole.viewportSize.x,rsUvY*blackhole.viewportSize.y)*16;
       blackhole.passActive=viewDepth>camera.near&&
-        rsUvY*blackhole.viewportSize.y>.65&&
+        rsUvY*blackhole.viewportSize.y>.18&&
         blackhole.projectedCenter.z>-1&&blackhole.projectedCenter.z<1&&
         Math.abs(blackhole.projectedCenter.x)<1+effectNdcX&&
         Math.abs(blackhole.projectedCenter.y)<1+effectNdcY;
@@ -5005,7 +5423,8 @@
       // Finder makes distant objects discoverable; labels are kept for nearby
       // bodies and the active target so the sky stays clean and cheap to draw.
       const standingOnBody=l.body&&camW.distanceTo(l.body.center)<l.r*1.08;
-      const visible = !standingOnBody&&((target && l.body === target) || dist < l.r * 2500);
+      const visible = !universeAnnotationsHidden&&!standingOnBody&&
+        ((target && l.body === target) || dist < l.r * 2500);
       if (visible) ensureBodyLabel(l);
       if (!l.spr) continue;
       l.spr.visible = visible;
@@ -5026,7 +5445,10 @@
     const alt = Math.max(0, pos.distanceTo(altP.center) - altP.r - PLAYER_FEET);
     hudPlanet.textContent = (grounded ? '' : '→ ') + altP.name;
     hudAlt.textContent = 'Altitude: ' + fmtDist(alt);
-    hudSpeed.textContent = 'Speed: ' + (grounded ? '0 m/s' : fmtSpeed(vel.length()));
+    const localMotion=grounded||distSurf<2e4;
+    hudSpeed.textContent='Speed: '+(grounded
+      ? fmtLocalSpeed(groundSpeedNow+landingSlide.length())
+      : (localMotion?fmtLocalSpeed(vel.length()):fmtSpeed(vel.length())));
     hudGrav.textContent = grounded ? '' : 'Gravity field: ' + domBody.name;
     fuelBar.style.width = fuel.toFixed(1) + '%';
     if (target) {
