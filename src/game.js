@@ -2804,11 +2804,9 @@
   // a sustainable athletic run rather than the previous superhuman 30 m/s.
   const WALK_SPEED = 1.8;
   const RUN_SPEED = 6.2;
-  // Human take-off velocity. On Earth this gives roughly 0.35–1.35 m of
-  // ballistic rise; lower-gravity worlds naturally produce higher jumps.
-  const JUMP_MIN = 2.65;
-  const JUMP_MAX = 5.15;
-  const CHARGE_TIME = 1.05;
+  const JUMP_MIN = 6;
+  const JUMP_MAX = 12000;
+  const CHARGE_TIME = 1.6;
   const FUEL_MAX = 100;
   const FUEL_REFILL_GROUND = 60;
   const FUEL_REFILL_AIR = 30;
@@ -2833,14 +2831,12 @@
   let earthInWater = false;
   const camDir = V3(0, 0, -1);
   const activeThrustDirection=V3(0,0,-1);
-  const launchBurnDirection=V3(0,1,0);
   const lastFacing = V3(0, 0, -1);
   let walkPhase = 0, squash = 0, wasGrounded = true, groundSpeedNow = 0;
   let takeoffBlend = 0, landingImpact = 0, airborneTime = 0;
   let landingAge=99,landingStrength=0,swimBlend=0;
   const landingSlide=new THREE.Vector3();
   let flightThrottle=0,flightBrake=0;
-  let launchBurnTime=0,launchBurnStrength=0;
   let jumpGrace = 0;
   let airCarry = null;   // the planet whose rotating frame we move in
   let lean = 0;
@@ -2986,7 +2982,7 @@
     prevPos.copy(pos);
     vel.set(0, 0, 0);
     groundMotion.set(0,0,0);
-    flightThrottle=0;flightBrake=0;launchBurnTime=0;launchBurnStrength=0;
+    flightThrottle=0;flightBrake=0;
     grounded = true;
     up.copy(n); smoothUp.copy(n);
     earthInWater=p===earth&&earthWaterAtWorld(n);
@@ -3905,33 +3901,14 @@
   }
 
   function doJump() {
-    // A jump is a ground-reaction impulse, not a camera-fired projectile.
-    // Preserve running momentum and add a primarily vertical leg impulse;
-    // camera direction only contributes a small, physically plausible lean.
-    const effort=charge*charge*(3-2*charge);
-    const launchSpeed=THREE.MathUtils.lerp(JUMP_MIN,JUMP_MAX,effort);
+    const power = JUMP_MIN + (JUMP_MAX - JUMP_MIN) * charge * charge;
+    const dir = camDir.clone();
+    const rc = dir.dot(up);
+    if (rc < 0.25) dir.addScaledVector(up, 0.25 - rc).normalize();
     const h = horizDir().clone();
     const right = tmpV2.crossVectors(h, smoothUp).normalize();
     const mv = moveInput(h, right, new THREE.Vector3());
-    const aimTangent=camDir.clone().addScaledVector(up,-camDir.dot(up));
-    if(aimTangent.lengthSq()>1e-6)aimTangent.normalize();else aimTangent.copy(h);
-    const jumpTangent=mv.lengthSq()>.001?mv.normalize():aimTangent;
-    const launchAngle=THREE.MathUtils.lerp(.04,.18,effort);
-    vel.copy(groundMotion).addScaledVector(up,launchSpeed*Math.cos(launchAngle));
-    const desiredTakeoffHorizontal=launchSpeed*Math.sin(launchAngle);
-    const alongJump=vel.dot(jumpTangent);
-    if(alongJump<desiredTakeoffHorizontal)vel.addScaledVector(jumpTangent,desiredTakeoffHorizontal-alongJump);
-    // A charged launch transitions from the leg impulse into a finite
-    // repulsor burn. This preserves a believable first contact while retaining
-    // Solar Jumper's ability to climb out of a planet's gravity well.
-    launchBurnStrength=effort;
-    launchBurnTime=effort>.035?.4+effort*3.2:0;
-    launchBurnDirection.copy(camDir);
-    const radialComponent=launchBurnDirection.dot(up);
-    if(radialComponent<.72)launchBurnDirection.addScaledVector(up,.72-radialComponent);
-    launchBurnDirection.normalize();
-    activeThrustDirection.copy(launchBurnDirection);
-    pos.addScaledVector(up,.025);
+    vel.copy(dir).multiplyScalar(power).add(groundMotion).addScaledVector(mv, WALK_SPEED*.25);
     groundMotion.set(0,0,0);
     flightThrottle=0;flightBrake=0;
     grounded = false;
@@ -4076,7 +4053,7 @@
     if(groundMotion.length()>RUN_SPEED)groundMotion.setLength(RUN_SPEED);
     landingSlide.sub(groundMotion);
     vel.set(0, 0, 0);
-    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;launchBurnTime=0;launchBurnStrength=0;
+    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;
     if(!contactPoint){
       const srL = surfaceR(p, n);
       pos.copy(p.center).addScaledVector(n, (srL < 0 ? p.r : srL) + PLAYER_FEET);
@@ -4758,11 +4735,8 @@
       else relativeVel.copy(vel).sub(nearestP.velNow);
       const currentFlightSpeed=relativeVel.length();
       const braking=keys.ShiftLeft||keys.ShiftRight;
-      if(braking)launchBurnTime=0;
-      const manualThrust=keys.Space&&!charging&&fuel>0&&!braking;
-      const launchThrust=launchBurnTime>0&&fuel>0&&!braking;
-      const wantsThrust=manualThrust||launchThrust;
-      activeThrustDirection.copy(manualThrust?camDir:launchBurnDirection).normalize();
+      const wantsThrust=keys.Space&&!charging&&fuel>0&&!braking;
+      activeThrustDirection.copy(camDir).normalize();
       flightThrottle=damp(flightThrottle,wantsThrust?1:0,wantsThrust?1.35:4.5,dt);
       flightBrake=damp(flightBrake,braking?1:0,braking?5.5:7.5,dt);
       // Steering authority grows with velocity, but only as a bounded fraction
@@ -4784,12 +4758,6 @@
         // but the throttle itself spools up. Reapplying thrust after braking
         // therefore resumes continuously instead of changing speed in one frame.
         let effAccel=Math.max(100,currentFlightSpeed*.72)*flightThrottle;
-        if(launchThrust){
-          // Full charge reaches the former launch envelope over several smooth
-          // seconds instead of teleporting velocity in the takeoff frame.
-          effAccel=Math.max(effAccel,(900+launchBurnStrength*3300)*flightThrottle);
-          launchBurnTime=Math.max(0,launchBurnTime-dt);
-        }
         if(nearBlackhole)effAccel=Math.min(effAccel,2.2e6);
         vel.addScaledVector(activeThrustDirection, effAccel * dt);
         const burn = distSurf > 2e5 ? 4 : 20;
