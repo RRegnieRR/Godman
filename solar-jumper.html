@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Godman</title>
+<script>
+  // Keep this original self-contained build as the requested one-file archive,
+  // while the long-standing public URL opens the current modular release.
+  // Add ?legacy=1 to run the preserved version directly.
+  if (!new URLSearchParams(location.search).has('legacy')) {
+    location.replace('index.html' + location.search + location.hash);
+  }
+</script>
 <style>
   :root { --paper: #f1ead8; --paper-dim: rgba(241,234,216,.58); --line: rgba(241,234,216,.26); --night: rgba(5,8,15,.86); }
   html, body { margin: 0; padding: 0; overflow: hidden; background: #000; height: 100%; font-family: 'Avenir Next', 'Trebuchet MS', sans-serif; }
