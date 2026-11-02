@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Suit motion studio</title>
+<style>
+body{margin:0;background:#171c22;color:#ece6dc;font:14px system-ui}canvas{display:block}aside{position:absolute;left:22px;top:20px;width:265px;background:#171b20dd;padding:20px;border:1px solid #ffffff24;border-radius:8px}h1{font-size:20px;margin:0 0 8px}p{line-height:1.5;color:#b4bac0}label{display:block;margin-top:14px}button,select{background:#333b44;color:#fff;border:1px solid #ffffff30;border-radius:4px;padding:9px;margin:5px 0}select,input{width:100%}button{cursor:pointer}output{display:block;margin:14px 0;color:#e6b78f}a{color:#e6b78f}.row{display:flex;gap:8px}#loading{position:absolute;right:24px;top:24px}
+@media(max-width:700px){aside{left:8px;top:8px;width:230px;padding:10px}aside p,aside label,aside input,aside output,aside a{display:none}aside h1{font-size:14px}aside select{padding:4px}aside button{padding:5px;font-size:11px}#loading{top:auto;bottom:10px;right:10px;font-size:10px}}
+@media(max-width:700px){aside label[for="scrub"],aside #scrub{display:block}aside label[for="scrub"]{font-size:11px;margin-top:4px}}
+#flightControls{margin-top:8px;font-size:12px}#flightControls input,#flightControls label{display:block}#flightControls summary{cursor:pointer;color:#e6b78f}
+</style></head><body>
+<aside><h1>Suit motion studio</h1><p>The same motion controller and model used in the game. Drag the scene to orbit.</p>
+<label for="pose">Movement</label><select id="pose">
+<option value="idle">Idle / breathing</option><option value="walk">Walk · 1.8 m/s</option><option value="run">Run · 6.2 m/s</option><option value="charge">Charge / planted crouch</option><option value="jump">Launch sequence</option><option value="land">Landing sequence</option><option value="fall">Atmospheric fall</option><option value="coast">Weightless coast</option><option value="hover">Repulsor hover</option><option value="cruise">Repulsor cruise</option><option value="turn">Bank / steering</option><option value="brake">Air brake</option><option value="swim">Swimming</option><option value="sourcewalk">Original authored walk · comparison</option></select>
+<div class="row"><button id="replay">Replay</button><button id="pause">Pause</button><button id="front">Front</button><button id="side">Side</button></div>
+<label for="scrub">Sequence time</label><input id="scrub" type="range" min="0" max="4" step="0.01" value="0">
+<label for="seek">Inspect time (seconds)</label><input id="seek" type="number" min="0" max="4" step="0.01" value="0">
+<label for="rate">Playback speed</label><input id="rate" type="range" min="0.1" max="1" step="0.1" value="1">
+<details id="flightControls"><summary>Live flight steering</summary>
+<label for="flightYaw">Heading</label><input id="flightYaw" type="range" min="-180" max="180" step="5" value="0">
+<label for="flightPitch">Thrust tilt</label><input id="flightPitch" type="range" min="-60" max="80" step="5" value="0">
+<label for="flightPower">Throttle</label><input id="flightPower" type="range" min="0" max="1" step="0.05" value="1">
+</details>
+<output id="status">Loading suit…</output><a href="index.html">Open game</a>
+</aside><div id="loading">Loading model…</div>
+<script src="vendor/three.r128.min.js"></script><script src="vendor/loaders/GLTFLoader.r128.js"></script>
+<script src="src/runtime/character-motion.js?v=20261101.6"></script>
+<script src="src/runtime/character-controller.js?v=20261101.6"></script>
+<script src="src/runtime/animation-lab.js?v=20261101.6"></script>
+</body></html>

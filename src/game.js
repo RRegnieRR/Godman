@@ -2523,155 +2523,53 @@
   const authoredSuitActions={};
   const authoredSuitBones={};
   const authoredRepulsors=[];
-  let authoredLocomotionMoving=false,authoredLocomotionRunning=false;
-  let authoredFlightPoseBlend=0,repulsorBlend=0,authoredRepulsorIKWeight=0;
+  let characterMotion=null,repulsorBlend=0;
+  let spacePoseBlend=0;
+  const flightLocalDirection=new THREE.Vector3(),flightInverse=new THREE.Quaternion();
   const repulsorAxis=new THREE.Vector3(0,-1,0);
-  const repulsorDirection=new THREE.Vector3();
-  const repulsorTargetDirection=new THREE.Vector3();
-  const repulsorAverage=new THREE.Vector3();
-  const repulsorPosition=new THREE.Vector3();
-  const authoredIKBonePosition=new THREE.Vector3();
-  const authoredIKChildPosition=new THREE.Vector3();
-  const authoredIKCurrentDirection=new THREE.Vector3();
-  const authoredIKDesiredDirection=new THREE.Vector3();
-  const authoredIKRight=new THREE.Vector3();
-  const authoredIKForward=new THREE.Vector3();
-  const authoredIKWorldQuaternion=new THREE.Quaternion();
-  const authoredIKParentQuaternion=new THREE.Quaternion();
-  const authoredIKDeltaQuaternion=new THREE.Quaternion();
-  const authoredIKTargetQuaternion=new THREE.Quaternion();
-  const authoredPalmAxis=new THREE.Vector3(0,-1,0);
-  const authoredSoleAxis=new THREE.Vector3(0,-1,0);
-  const authoredPoseEuler=new THREE.Euler();
-  const authoredPoseQuaternion=new THREE.Quaternion();
+  const repulsorDirection=new THREE.Vector3(),repulsorPosition=new THREE.Vector3();
+  const repulsorAverage=new THREE.Vector3(),repulsorFrame=new THREE.Quaternion();
   const repulsorLight=new THREE.PointLight(0x65bfff,0,8,2);
   scene.add(repulsorLight);
 
   function createAuthoredRepulsor(bone,type,side){
     if(!bone)return;
-    const locator=new THREE.Object3D();
-    locator.position.set(type==='hand'?12:11,type==='hand'?-1.2:-2.2,side*(type==='hand'?.35:.2));
-    bone.add(locator);
+    const locator=window.GodmanRepulsorAnchor(authoredSuitRoot,bone,type);
     const fx=new THREE.Group();fx.visible=false;scene.add(fx);
-    const outerMat=new THREE.MeshBasicMaterial({color:0x2d86ff,transparent:true,opacity:.34,
-      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-    const innerMat=new THREE.MeshBasicMaterial({color:0xe8fbff,transparent:true,opacity:.9,
-      blending:THREE.AdditiveBlending,depthWrite:false});
-    const outerLength=type==='hand'?.42:.62,innerLength=type==='hand'?.28:.4;
-    const outer=new THREE.Mesh(new THREE.ConeGeometry(type==='hand'?.055:.075,outerLength,18,1,true),outerMat);
-    const inner=new THREE.Mesh(new THREE.ConeGeometry(type==='hand'?.025:.035,innerLength,14),innerMat);
-    outer.position.y=-outerLength*.5;inner.position.y=-innerLength*.5;
-    const ring=new THREE.Mesh(new THREE.TorusGeometry(type==='hand'?.052:.068,.009,8,24),innerMat.clone());
-    ring.rotation.x=Math.PI/2;ring.scale.y=.6;
-    const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:softSprite('rgba(235,252,255,1)','rgba(40,135,255,.05)'),
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));
-    glow.scale.setScalar(type==='hand'?.25:.33);
-    fx.add(outer,inner,ring,glow);
-    authoredRepulsors.push({locator,fx,outer,inner,ring,glow,type,phase:authoredRepulsors.length*1.73});
-  }
-
-  function applyAuthoredPoseOffset(bone,x,y,z,weight){
-    if(!bone||weight<=.001)return;
-    authoredPoseEuler.set(x*weight,y*weight,z*weight,'XYZ');
-    authoredPoseQuaternion.setFromEuler(authoredPoseEuler);
-    bone.quaternion.multiply(authoredPoseQuaternion);
-  }
-
-  function aimAuthoredBoneToward(bone,child,directionWorld,weight){
-    if(!bone||!child||weight<=.001)return;
-    bone.updateWorldMatrix(true,false);child.updateWorldMatrix(true,false);
-    bone.getWorldPosition(authoredIKBonePosition);
-    child.getWorldPosition(authoredIKChildPosition);
-    authoredIKCurrentDirection.copy(authoredIKChildPosition).sub(authoredIKBonePosition);
-    if(authoredIKCurrentDirection.lengthSq()<1e-8)return;
-    authoredIKCurrentDirection.normalize();
-    authoredIKDesiredDirection.copy(directionWorld).normalize();
-    authoredIKDeltaQuaternion.setFromUnitVectors(authoredIKCurrentDirection,authoredIKDesiredDirection);
-    bone.getWorldQuaternion(authoredIKWorldQuaternion);
-    authoredIKTargetQuaternion.copy(authoredIKDeltaQuaternion).multiply(authoredIKWorldQuaternion);
-    if(bone.parent){
-      bone.parent.getWorldQuaternion(authoredIKParentQuaternion).invert();
-      authoredIKTargetQuaternion.premultiply(authoredIKParentQuaternion);
-    }
-    bone.quaternion.slerp(authoredIKTargetQuaternion,THREE.MathUtils.clamp(weight,0,1));
-    bone.updateWorldMatrix(false,true);
-  }
-
-  function aimAuthoredBoneAxis(bone,localAxis,directionWorld,weight){
-    if(!bone||weight<=.001)return;
-    bone.updateWorldMatrix(true,false);
-    bone.getWorldQuaternion(authoredIKWorldQuaternion);
-    authoredIKCurrentDirection.copy(localAxis).applyQuaternion(authoredIKWorldQuaternion).normalize();
-    authoredIKDeltaQuaternion.setFromUnitVectors(authoredIKCurrentDirection,directionWorld);
-    authoredIKTargetQuaternion.copy(authoredIKDeltaQuaternion).multiply(authoredIKWorldQuaternion);
-    if(bone.parent){
-      bone.parent.getWorldQuaternion(authoredIKParentQuaternion).invert();
-      authoredIKTargetQuaternion.premultiply(authoredIKParentQuaternion);
-    }
-    bone.quaternion.slerp(authoredIKTargetQuaternion,THREE.MathUtils.clamp(weight,0,1));
-    bone.updateWorldMatrix(false,true);
-  }
-
-  function updateAuthoredRepulsorIK(weight){
-    if(weight<=.01||repulsorDirection.lengthSq()<.5)return;
-    authoredIKForward.copy(lastFacing).addScaledVector(smoothUp,-lastFacing.dot(smoothUp));
-    if(authoredIKForward.lengthSq()<1e-6)authoredIKForward.copy(camDir).addScaledVector(smoothUp,-camDir.dot(smoothUp));
-    authoredIKForward.normalize();
-    authoredIKRight.crossVectors(authoredIKForward,smoothUp).normalize();
-    for(const side of [-1,1]){
-      const arm=side<0?authoredSuitBones['L_Arm.10']:authoredSuitBones['R_Arm.44'];
-      const elbow=side<0?authoredSuitBones['L_Elbow.11']:authoredSuitBones['R_Elbow.45'];
-      const wrist=side<0?authoredSuitBones['L_Wrist.12']:authoredSuitBones['R_Wrist.46'];
-      const thigh=side<0?authoredSuitBones['L_Thigh.82']:authoredSuitBones['R_Thigh.88'];
-      const knee=side<0?authoredSuitBones['L_Knee.83']:authoredSuitBones['R_Knee.89'];
-      const ankle=side<0?authoredSuitBones['L_Ankle.84']:authoredSuitBones['R_Ankle.90'];
-      authoredIKDesiredDirection.copy(repulsorDirection)
-        .addScaledVector(authoredIKRight,side*.2).addScaledVector(authoredIKForward,-.05).normalize();
-      aimAuthoredBoneToward(arm,elbow,authoredIKDesiredDirection,weight*.76);
-      authoredIKDesiredDirection.copy(repulsorDirection)
-        .addScaledVector(authoredIKRight,side*.055).normalize();
-      aimAuthoredBoneToward(elbow,wrist,authoredIKDesiredDirection,weight*.9);
-      aimAuthoredBoneAxis(wrist,authoredPalmAxis,repulsorDirection,weight);
-      authoredIKDesiredDirection.copy(repulsorDirection)
-        .addScaledVector(authoredIKRight,side*.075).addScaledVector(authoredIKForward,.045).normalize();
-      aimAuthoredBoneToward(thigh,knee,authoredIKDesiredDirection,weight*.72);
-      authoredIKDesiredDirection.copy(repulsorDirection)
-        .addScaledVector(authoredIKRight,side*.025).normalize();
-      aimAuthoredBoneToward(knee,ankle,authoredIKDesiredDirection,weight*.88);
-      aimAuthoredBoneAxis(ankle,authoredSoleAxis,repulsorDirection,weight);
-    }
+    const plume=window.GodmanRepulsorPlume(type);
+    const nozzle=new THREE.Mesh(new THREE.SphereGeometry(type==='hand'?.031:.044,12,8),
+      new THREE.MeshBasicMaterial({color:0xd8efff,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));
+    nozzle.scale.y=.28;
+    fx.add(plume,nozzle);
+    authoredRepulsors.push({locator,fx,plume,nozzle,type});
   }
 
   function updateAuthoredRepulsors(dt,active){
-    repulsorBlend=damp(repulsorBlend,active?Math.max(.25,flightThrottle):0,active?9:13,dt);
+    const braking=!grounded&&!earthInWater?flightBrake:0;
+    repulsorBlend=damp(repulsorBlend,active?Math.max(.25,flightThrottle):braking*.65,active?8:12,dt);
     if(!authoredRepulsors.length)return;
     player.updateMatrixWorld(true);
-    // Exhaust is exactly opposite the force applied by the controller. A
-    // critically damped direction change keeps the emitters stable without
-    // letting their visuals lag behind steering reversals.
-    repulsorTargetDirection.copy(activeThrustDirection).multiplyScalar(-1).normalize();
-    if(repulsorDirection.lengthSq()<.5)repulsorDirection.copy(repulsorTargetDirection);
-    else repulsorDirection.lerp(repulsorTargetDirection,1-Math.exp(-14*dt)).normalize();
     repulsorAverage.set(0,0,0);
-    let visibleCount=0;
+    // Exhaust follows each actual palm/sole normal, including wrist steering.
+    let count=0;
     for(const r of authoredRepulsors){
       r.locator.getWorldPosition(repulsorPosition);
       r.fx.position.copy(repulsorPosition);
+      r.locator.parent.getWorldQuaternion(repulsorFrame);
+      repulsorDirection.copy(r.locator.userData.exhaustAxis).applyQuaternion(repulsorFrame).normalize();
       r.fx.quaternion.setFromUnitVectors(repulsorAxis,repulsorDirection);
-      const strength=repulsorBlend*(r.type==='hand'?.88:1);
-      const pulse=.9+Math.sin(elapsed*31+r.phase)*.08+Math.sin(elapsed*67+r.phase*.7)*.035;
-      r.fx.visible=strength>.015;
-      r.fx.scale.set(pulse,.5+strength*.75,pulse);
-      r.outer.material.opacity=.1+strength*.26;
-      r.inner.material.opacity=.5+strength*.5;
-      r.ring.material.opacity=.4+strength*.6;
-      r.glow.material.opacity=.28+strength*.65;
-      if(r.fx.visible){repulsorAverage.add(repulsorPosition);visibleCount++;}
+      const side=r.locator.parent.name.startsWith('L')?1:-1;
+      const strength=repulsorBlend*(characterMotion?characterMotion.nozzleShare(r.type,side):1);
+      r.fx.visible=strength>.012;
+      r.fx.scale.setScalar(1);
+      r.plume.scale.set(1+spacePoseBlend*.22,.25+strength*.95,1+spacePoseBlend*.22);
+      r.plume.userData.material.uniforms.strength.value=strength;
+      r.plume.userData.material.uniforms.time.value=elapsed;
+      r.nozzle.material.opacity=strength;
+      if(r.fx.visible){repulsorAverage.add(repulsorPosition);count++;}
     }
-    if(visibleCount){
-      repulsorLight.position.copy(repulsorAverage).multiplyScalar(1/visibleCount);
-      repulsorLight.intensity=repulsorBlend*4.2;
-    }else repulsorLight.intensity=0;
+    if(count){repulsorLight.position.copy(repulsorAverage).multiplyScalar(1/count);}
+    repulsorLight.intensity=count?repulsorBlend*2.1:0;
   }
   function useAuthoredSuitAction(name,fade=.3,speed=1,delta=.016){
     const next=authoredSuitActions[name];
@@ -2724,6 +2622,7 @@
       player.add(visual);
       authoredSuitRoot=visual;authoredSuitModel=model;
       for(const root of proceduralCharacterRoots)root.visible=false;
+      model.traverse(b=>{if(b.isBone)b.userData.motionBindQuaternion=b.quaternion.clone();});
       authoredSuitMixer=new THREE.AnimationMixer(model);
       const loadedBones=[];
       model.traverse(o=>{if(o.isBone){loadedBones.push(o);authoredSuitBones[o.name]=o;}});
@@ -2738,17 +2637,10 @@
         const key=(clip.name||'').toLowerCase();
         authoredSuitActions[key]=authoredSuitMixer.clipAction(clip);
       }
-      // The source contains one locomotion take. Give walking and running
-      // independent mixer actions so their cadence can crossfade instead of
-      // abruptly changing the playback rate of one active action.
-      const locomotionClip=gltf.animations.find(clip=>(clip.name||'').toLowerCase()==='moon_walk');
-      if(locomotionClip){
-        const walkClip=locomotionClip.clone();walkClip.name='ground_walk';
-        const runClip=locomotionClip.clone();runClip.name='ground_run';
-        authoredSuitActions.ground_walk=authoredSuitMixer.clipAction(walkClip);
-        authoredSuitActions.ground_run=authoredSuitMixer.clipAction(runClip);
-      }
       useAuthoredSuitAction('idle',0,1);
+      authoredSuitMixer.update(0);
+      player.updateMatrixWorld(true);
+      characterMotion=new window.GodmanCharacterMotion(visual,authoredSuitBones);
       createAuthoredRepulsor(authoredSuitBones['L_Wrist.12'],'hand',-1);
       createAuthoredRepulsor(authoredSuitBones['R_Wrist.46'],'hand',1);
       createAuthoredRepulsor(authoredSuitBones['L_Ankle.84'],'foot',-1);
@@ -4967,14 +4859,18 @@
       if(landingAge>1.35)landingStrength=0;
     }
 
+    const atmosphericPose=nearestP.atmosphere&&!nearestP.isStar
+      ? 1-THREE.MathUtils.smoothstep(Math.max(0,distSurf),nearestP.r*.008,nearestP.r*.025):0;
+    spacePoseBlend=damp(spacePoseBlend,1-atmosphericPose,2.5,dt);
     const leanTarget = earthInWater
       ? .38+Math.min(.42,groundSpeedNow*.055)
       : (!grounded && thrusting)
-      ? 1.25 * (1 - Math.max(0, Math.min(1, activeThrustDirection.dot(smoothUp))))
-      : (!grounded ? 0.25 : 0);
+      ? .95 * (1 - Math.max(0, Math.min(1, activeThrustDirection.dot(smoothUp))))
+      : (!grounded ? .08+.15*atmosphericPose : 0);
     lean = damp(lean, leanTarget, 5, dt);
 
 
+    if(!characterMotion){
     const k = 10;
     const runRequested=grounded&&!earthInWater&&(keys.ShiftLeft||keys.ShiftRight)&&groundSpeedNow>WALK_SPEED*.7;
     const runFrac=runRequested?Math.max(.3,Math.min(1,
@@ -5102,78 +4998,13 @@
       rig.armR.el.rotation.x = damp(rig.armR.el.rotation.x, 0.05, 12, dt);
     }
 
-    if(authoredSuitRoot&&authoredSuitMixer){
-      let action='idle',actionSpeed=1,fade=.32;
-      if(authoredLocomotionMoving){
-        if(!grounded||earthInWater||groundSpeedNow<.10)authoredLocomotionMoving=false;
-      }else if(grounded&&!earthInWater&&groundSpeedNow>.28)authoredLocomotionMoving=true;
-      if(authoredLocomotionRunning){
-        if(!authoredLocomotionMoving||!runRequested||groundSpeedNow<WALK_SPEED*1.25)authoredLocomotionRunning=false;
-      }else if(authoredLocomotionMoving&&runRequested&&groundSpeedNow>WALK_SPEED*1.45){
-        authoredLocomotionRunning=true;
-      }
-      if(!grounded||earthInWater){
-        action='floating';
-        actionSpeed=thrusting?1.18:(earthInWater?.82:.94);
-        fade=.48;
-      }else if(authoredLocomotionMoving){
-        if(authoredLocomotionRunning){
-          action=authoredSuitActions.ground_run?'ground_run':'moon_walk';
-          const effort=Math.max(0,Math.min(1,(groundSpeedNow-WALK_SPEED)/(RUN_SPEED-WALK_SPEED)));
-          actionSpeed=2.65+effort*.95;
-          fade=.17;
-        }else{
-          action=authoredSuitActions.ground_walk?'ground_walk':'moon_walk';
-          const effort=Math.max(0,Math.min(1,groundSpeedNow/WALK_SPEED));
-          actionSpeed=1.35+effort*.8;
-          fade=.22;
-        }
-      }
-      useAuthoredSuitAction(action,fade,actionSpeed,dt);
-      authoredSuitMixer.update(dt);
-      authoredFlightPoseBlend=damp(authoredFlightPoseBlend,!grounded?(thrusting?1:.38):0,
-        !grounded?4.8:7.5,dt);
-      // Small additive offsets turn the authored floating motion into a stable
-      // four-point repulsor posture without replacing its natural joint motion.
-      // Palms rotate aft, shoulders settle, knees soften and boots align with
-      // the shared exhaust vector; the blend removes any hard pose snap.
-      const fp=authoredFlightPoseBlend;
-      applyAuthoredPoseOffset(authoredSuitBones['L_Arm.10'],0,-.10,.18,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Arm.44'],0,.10,-.18,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['L_Elbow.11'],0,0,-.12,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Elbow.45'],0,0,-.12,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['L_Wrist.12'],0,-.34,.08,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Wrist.46'],0,.34,-.08,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['L_Thigh.82'],.035,0,.025,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Thigh.88'],.035,0,-.025,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['L_Knee.83'],0,0,-.08,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Knee.89'],0,0,-.08,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['L_Ankle.84'],0,0,.1,fp);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Ankle.90'],0,0,.1,fp);
-      // The real rig visibly compresses through its knees during jump loading
-      // and touchdown instead of moving the whole mesh down as a rigid block.
-      const contactPose=grounded?Math.max(charge*.9,squash):0;
-      applyAuthoredPoseOffset(authoredSuitBones['L_Knee.83'],0,0,-.62,contactPose);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Knee.89'],0,0,-.62,contactPose);
-      applyAuthoredPoseOffset(authoredSuitBones['L_Elbow.11'],0,-.11,0,contactPose);
-      applyAuthoredPoseOffset(authoredSuitBones['R_Elbow.45'],0,-.11,0,contactPose);
+    } // procedural fallback only
 
-      // Two-stage directional IK: shoulders/hips place each limb into the
-      // exhaust hemisphere, elbows/knees carry it toward the thrust line, and
-      // the final wrist/ankle correction aims the palm or sole normal exactly
-      // opposite the applied acceleration. This is recomputed every frame, so
-      // a camera reversal moves through a smooth physical arc rather than
-      // leaving emitters attached to a stale pose.
-      authoredRepulsorIKWeight=THREE.MathUtils.clamp(fp*repulsorBlend*1.18,0,1);
-      // The AnimationMixer owns every joint. Only the containing visual group
-      // receives gameplay-scale posture and impact offsets, preserving the
-      // authored skin weights and all finger anatomy.
-      const runLean=grounded&&authoredLocomotionRunning?(.08+runFrac*.08):0;
-      const flightTilt=!grounded?(thrusting?.52:.12):earthInWater?.24:-runLean;
-      authoredSuitRoot.rotation.x=damp(authoredSuitRoot.rotation.x,flightTilt,6.5,dt);
-      authoredSuitRoot.rotation.y=dampAngle(authoredSuitRoot.rotation.y,Math.PI,9,dt);
-      authoredSuitRoot.rotation.z=damp(authoredSuitRoot.rotation.z,0,9,dt);
-      authoredSuitRoot.position.y=damp(authoredSuitRoot.position.y,-charge*.11-squash*.12,10,dt);
+    if(authoredSuitRoot&&authoredSuitMixer){
+      // The idle take supplies breathing/finger detail. A single contact-aware
+      // controller owns all limb poses, rather than competing clip overrides.
+      useAuthoredSuitAction('idle',.25,.75,dt);
+      authoredSuitMixer.update(dt);
     }
 
     // ---- Player orientation ----
@@ -5187,16 +5018,23 @@
     const ang = Math.atan2(crossV.dot(smoothUp), f0.dot(lastFacing));
     const qYaw = frameScratch.yawQ.setFromAxisAngle(smoothUp, ang);
     const qLean = frameScratch.leanQ.setFromAxisAngle(frameScratch.localRight, -lean);
-    player.quaternion.copy(qYaw.multiply(q1)).multiply(qLean);
+    player.quaternion.copy(qYaw.multiply(q1));
+    if(!characterMotion)player.quaternion.multiply(qLean);
     player.position.set(0, 0, 0);
     const sy = 1 - 0.025 * charge;
     // Sagittarius A* is supermassive: the tidal gradient across a human at
     // its horizon is far too small to justify the old four-times character
     // stretch. Keep the body rigid until the irreversible capture event.
     player.scale.set(PSCALE, PSCALE * sy, PSCALE);
-    // Solve after the final body orientation so palms, soles and exhaust all
-    // agree in world space even during a rapid steering reversal.
-    updateAuthoredRepulsorIK(authoredRepulsorIKWeight);
+    if(characterMotion){
+      flightInverse.copy(player.quaternion).invert();
+      flightLocalDirection.copy(activeThrustDirection).applyQuaternion(flightInverse);
+      characterMotion.orient(dt,player.quaternion,smoothUp,activeThrustDirection,vel,grounded,earthInWater,spacePoseBlend);
+      player.scale.setScalar(PSCALE);
+      characterMotion.update(dt,{grounded,charge,landing:squash,speed:groundSpeedNow,
+        airTime:airborneTime,space:spacePoseBlend,powered:thrusting,throttle:flightThrottle,brake:flightBrake,
+        water:earthInWater,laser:laserEquipped,turn:flightLocalDirection.x});
+    }
     updateAuthoredRepulsors(dt,thrusting&&!earthInWater);
 
     headlamp.position.copy(smoothUp).multiplyScalar(3);
