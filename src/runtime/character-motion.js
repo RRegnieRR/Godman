@@ -9,6 +9,43 @@
   const X = new T.Vector3(1, 0, 0);
   const REST_FACING = new T.Quaternion().setFromAxisAngle(new T.Vector3(0, 1, 0), Math.PI);
 
+  // Use the reference's clean right-arm track for both sides. Its left take
+  // crosses the suit at a different height, provoking a large clearance flare.
+  // Reflect in the reference hips frame, BEFORE retargeting into the suit.
+  function armReference(clip,phase,side,upper,lower){
+    const p=(phase+(side==='L'?.5:0))%1,f=p*(clip.frames.length-1),i=Math.floor(f),u=f-i;
+    const a=clip.frames[i].R_arm,b=clip.frames[Math.min(i+1,clip.frames.length-1)].R_arm;
+    for(let k=0;k<3;k++){
+      upper.setComponent(k,T.MathUtils.lerp(a[k],b[k],u));
+      lower.setComponent(k,T.MathUtils.lerp(a[k+3],b[k+3],u));
+    }
+    if(side==='L'){upper.x*=-1;lower.x*=-1;}
+    upper.normalize();lower.normalize();
+  }
+  global.GodmanArmReference=armReference;
+  class ArmClearance{
+    constructor(){this.v=new T.Vector3();this.q=new T.Quaternion();this.z=new T.Vector3(0,0,1);}
+    apply(origin,goal,pole,sign,weight,allowance=.025){
+      const z=(goal.z-.04)/.77,inside=1-z*z;
+      // Round the front rim as well as the height limits. A hard height gate
+      // used to switch the left shoulder sideways halfway through a walk.
+      const chord=Math.sqrt(.5*(inside+Math.sqrt(inside*inside+.04**2)));
+      const clearance=.14+.78*chord;
+      this.v.copy(goal).sub(origin);
+      const dx=sign*this.v.x,dy=this.v.y,radius=Math.hypot(dx,dy);
+      const target=clearance-sign*origin.x;
+      const angle=clamp(-Math.acos(clamp(target/Math.max(radius,.001),-1,1))-Math.atan2(dy,dx),0,.60);
+      const height=smooth(1,1.2,goal.y)*(1-smooth(2.55,2.8,goal.y));
+      const below=1-smooth(-.10,.10,goal.y-origin.y);
+      const approach=1-smooth(1,1.32,Math.abs(z));
+      this.q.setFromAxisAngle(this.z,sign*(angle*height*below*approach+allowance)*weight);
+      goal.copy(this.v.applyQuaternion(this.q)).add(origin);pole.sub(origin).applyQuaternion(this.q).add(origin);
+      this.q.setFromAxisAngle(X,-.065*weight);
+      goal.sub(origin).applyQuaternion(this.q).add(origin);pole.sub(origin).applyQuaternion(this.q).add(origin);
+    }
+  }
+  global.GodmanArmClearance=ArmClearance;
+
   // Contact, toe-off, heel recovery, forward swing, contact. Values are in
   // leg-length units so the same timing works on this suit's actual skeleton.
   const WALK_KEYS=[[0,.5,0,0],[.60,-.5,0,-.30],[.72,-.34,.09,-.10],[.86,.22,.08,.12],[1,.5,0,0]];

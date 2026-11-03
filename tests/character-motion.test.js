@@ -194,10 +194,11 @@ for(const mesh of gltf.meshes)for(const p of mesh.primitives){
   }
 }
 assert.ok(handSamples.length>50,'Glove geometry samples were not loaded');
-const collisionRig=rig(),matrices=inverses.map(()=>new T.Matrix4()),point=new T.Vector3(),transformed=new T.Vector3();
-let collisions=0;
+const matrices=inverses.map(()=>new T.Matrix4()),point=new T.Vector3(),transformed=new T.Vector3();
+for(const speed of [WALK_SPEED,RUN_SPEED]){
+const collisionRig=rig();let collisions=0;
 for(let i=0;i<360;i++){
-  step(collisionRig,{grounded:true,speed:RUN_SPEED});if(i<120)continue;
+  step(collisionRig,{grounded:true,speed});if(i<120)continue;
   collisionRig.frame.updateWorldMatrix(true,true);
   skin.joints.forEach((node,j)=>matrices[j].multiplyMatrices(collisionRig.nodes[node].matrixWorld,inverses[j]));
   for(const sample of handSamples){point.set(0,0,0);for(let k=0;k<4;k++)point.addScaledVector(transformed.copy(sample.p).applyMatrix4(matrices[sample.ids[k]]),sample.weights[k]);
@@ -205,7 +206,8 @@ for(let i=0;i<360;i++){
     if(point.y>1.2&&point.y<2.55&&point.x**2/.67**2+(point.z-.04)**2/.58**2<1)collisions++;
   }
 }
-assert.equal(collisions,0,'Skinned glove penetrated the torso/hip clearance envelope during running');
+assert.equal(collisions,0,`Skinned glove penetrated the torso/hip clearance envelope at ${speed} m/s`);
+}
 // Inspect the actual skinned boots, not ankle joint height. A posed ankle can
 // be well above the floor while the sole correctly touches it (and vice versa).
 const bootSurface=Object.values(soleCandidates).flat();
@@ -330,6 +332,15 @@ for(let i=0;i<300;i++){
     const key=c.side+'_'+c.type,a=sourceA[key],b=sourceB[key];
     const expectedUpper=new T.Vector3().fromArray(a).lerp(new T.Vector3().fromArray(b),u).normalize();
     const expectedLower=new T.Vector3().fromArray(a,3).lerp(new T.Vector3().fromArray(b,3),u).normalize();
+    if(c.type==='arm'&&c.side==='L'){
+      // Left retargeting uses the clean opposite-side take half a cycle
+      // apart, reflected in the reference hips frame (not the bent suit).
+      const f=((runningRig.controller.phase+.5)%1)*(GodmanRunMotion.frames.length-1),j=Math.floor(f),t=f-j;
+      const a=GodmanRunMotion.frames[j].R_arm,b=GodmanRunMotion.frames[j+1].R_arm;
+      expectedUpper.fromArray(a).lerp(new T.Vector3().fromArray(b),t).normalize();
+      expectedLower.fromArray(a,3).lerp(new T.Vector3().fromArray(b,3),t).normalize();
+      expectedUpper.x*=-1;expectedLower.x*=-1;
+    }
     const errors=sourceErrors[key]||(sourceErrors[key]={upper:0,lower:0,max:0,count:0});
     const upperError=upper.angleTo(expectedUpper),lowerError=lower.angleTo(expectedLower);
     errors.upper+=upperError;errors.lower+=lowerError;errors.max=Math.max(errors.max,upperError,lowerError);errors.count++;
@@ -358,10 +369,29 @@ for(const [key,errors]of Object.entries(sourceErrors)){
   assert.ok(errors.max<.65,`${key} grossly distorted the athletic reference`);
   if(arm){armUpperError+=errors.upper;armLowerError+=errors.lower;armSamples+=errors.count;}
 }
-// The original reference check averaged both arms: the pressure suit needs
-// more glove clearance on its left side, without changing the shoulder pump.
+// Retargeting may add suit clearance, without changing the shoulder pump.
 assert.ok(armUpperError/armSamples<.18&&armLowerError/armSamples<.18,'Run lost the original athletic shoulder/elbow timing');
 assert.ok(torsoError/torsoSamples<.12,'Run lost the athletic forward torso lean');
+// The left shoulder formerly hit a height gate during walking (over 1,100
+// rad/s² versus ~70 on the right) and flared substantially faster in running.
+// Check final visible shoulders across whole settled cycles in BOTH gaits.
+for(const speed of [WALK_SPEED,RUN_SPEED]){
+  const r=rig(),arms=r.controller.chains.filter(c=>c.type==='arm');
+  const previous=arms.map(c=>c.nodes[0].quaternion.clone()),lastVelocity=[null,null],peakSpeed=[0,0],peakAcceleration=[0,0];
+  for(let i=0;i<720;i++){
+    step(r,{grounded:true,speed},1/120);
+    arms.forEach((c,j)=>{
+      const current=c.nodes[0].quaternion.clone().normalize(),delta=previous[j].clone().invert().multiply(current).normalize();
+      if(delta.w<0)delta.set(-delta.x,-delta.y,-delta.z,-delta.w);
+      const sin=Math.hypot(delta.x,delta.y,delta.z);
+      const velocity=new T.Vector3(delta.x,delta.y,delta.z).multiplyScalar(2*Math.atan2(sin,delta.w)*120/Math.max(sin,1e-10));
+      if(i>=240){peakSpeed[j]=Math.max(peakSpeed[j],velocity.length());if(lastVelocity[j])peakAcceleration[j]=Math.max(peakAcceleration[j],velocity.distanceTo(lastVelocity[j])*120);}
+      previous[j].copy(current);lastVelocity[j]=velocity;
+    });
+  }
+  assert.ok(Math.max(...peakSpeed)/Math.min(...peakSpeed)<1.3,'One shoulder flares much faster than its opposite-side stride');
+  if(speed===WALK_SPEED)assert.ok(Math.max(...peakAcceleration)<250,'Walking shoulder hits an abrupt clearance gate');
+}
 // A complete settled stride must return to the same pose and height. Derive
 // the period from the running phase so this check does not prescribe cadence.
 const loopingRun=rig();

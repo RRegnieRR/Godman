@@ -7,6 +7,7 @@ const T=global.THREE=require(path.join(ROOT,'vendor/three.r128.min.js'));
 require(path.join(ROOT,'src/runtime/character-motion.js'));
 global.window=global;require(path.join(ROOT,'src/data/run-motion.js'));
 const Rig=global.GodmanCharacterMotion,source=global.GodmanRunMotion;
+const armClearance=new global.GodmanArmClearance();
 const clamp=T.MathUtils.clamp,smooth=(a,b,x)=>T.MathUtils.smoothstep(x,a,b);
 const FACING=new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),Math.PI);
 const file=fs.readFileSync(path.join(ROOT,'assets/character/rigged-astronaut.glb'));
@@ -88,25 +89,13 @@ function pose(phase,extraClearance=.025){
   for(const f of rig.runningFingers)f.bone.quaternion.copy(f.target);
   for(const c of rig.chains){
     const origin=frame.worldToLocal(c.nodes[0].getWorldPosition(new T.Vector3())),key=c.side+'_'+c.type;
-    const upper=s.vector(key).applyQuaternion(inverse),lower=s.vector(key,3).applyQuaternion(inverse);
+    const upper=s.vector(key),lower=s.vector(key,3);
+    if(c.type==='arm')global.GodmanArmReference(source,phase,c.side,upper,lower);
+    upper.applyQuaternion(inverse);lower.applyQuaternion(inverse);
     c.pole.copy(origin).addScaledVector(upper,c.lengthA);c.goal.copy(c.pole).addScaledVector(lower,c.lengthB);
     let pitch=0;c.footPlant=1;
     if(c.type==='leg'){const forward=s.vector(c.side+'_footForward');pitch=clamp(Math.atan2(-forward.y,Math.hypot(forward.x,forward.z)),-.55,.65);}
-    else{
-      // Rotate the whole athletic arm, preserving its elbow angle. A broad
-      // approach band has no entry gate at the front of the torso envelope.
-      const z=(c.goal.z-.04)/.77,clearance=.14+.78*Math.sqrt(Math.max(0,1-z*z));
-      if(Math.abs(z)<1.32&&c.sign*c.goal.x<clearance){
-        v.copy(c.goal).sub(origin);const dx=c.sign*v.x,dy=v.y,radius=Math.hypot(dx,dy),target=clearance-c.sign*origin.x;
-        const heightWeight=smooth(1,1.2,c.goal.y)*(1-smooth(2.55,2.8,c.goal.y));
-        const angle=clamp(-Math.acos(clamp(target/Math.max(radius,.001),-1,1))-Math.atan2(dy,dx),0,.60)*(1-smooth(1,1.32,Math.abs(z)))*heightWeight;
-        q.setFromAxisAngle(new T.Vector3(0,0,1),c.sign*angle);c.goal.copy(v.applyQuaternion(q)).add(origin);c.pole.sub(origin).applyQuaternion(q).add(origin);
-      }
-      // Uniform pressure-suit allowance is smooth and keeps fingers outside
-      // the mesh after periodic filtering. It adds no new arm timing.
-      q.setFromAxisAngle(new T.Vector3(0,0,1),c.sign*extraClearance);c.goal.sub(origin).applyQuaternion(q).add(origin);c.pole.sub(origin).applyQuaternion(q).add(origin);
-      q.setFromAxisAngle(new T.Vector3(1,0,0),-.065);c.goal.sub(origin).applyQuaternion(q).add(origin);c.pole.sub(origin).applyQuaternion(q).add(origin);
-    }
+    else armClearance.apply(origin,c.goal,c.pole,c.sign,1,extraClearance);
     rig.solve(c,1,pitch);
     if(c.type==='arm'){
       // The source contains limb directions, not palm aiming. Preserve a

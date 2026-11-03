@@ -44,6 +44,7 @@
         c.filtered=c.points[2].clone();c.targetVelocity=new T.Vector3();c.filteredPole=c.points[1].clone();c.origin=new T.Vector3();
       });
       this.running=new g.GodmanRunningGait(frame,this.chains);
+      this.armClearance=new g.GodmanArmClearance();
       this.transitionPrevious=this.chains.flatMap(c=>c.nodes.map(n=>n.quaternion.clone()));
       this.transitionStep=0;
       this.gaitSpeed=this.ready=this.headExtension=this.contactOffset=0;
@@ -90,6 +91,7 @@
         this.upperDir.setComponent(i,value(w,key,i));
         this.lowerDir.setComponent(i,value(w,key,i+3));
       }
+      if(c.type==='arm')g.GodmanArmReference(g.GodmanWalkMotion,this.phase,c.side,this.upperDir,this.lowerDir);
       this.upperDir.normalize().applyQuaternion(this.bodyInverse);this.lowerDir.normalize().applyQuaternion(this.bodyInverse);
       this.knee.copy(c.origin).addScaledVector(this.upperDir,c.lengthA);
       this.v.copy(this.knee).addScaledVector(this.lowerDir,c.lengthB);
@@ -211,43 +213,13 @@
           c.goal.lerp(this.v,this.water);c.footPlant*=1-this.water;
         }
         if(s.laser&&c.side==='R'&&c.type==='arm')c.goal.set(Math.max(.95,origin.x+.25),origin.y-.25,origin.z+1.3);
-        if(c.type==='arm'&&c.goal.y>1.15&&c.goal.y<2.65&&this.run*locomotion<.999){
-          // A lateral thrust request must not pull the glove through the suit.
-          // Allow hands toward the midline only once they are in front of it.
-          const z=(c.goal.z-.04)/.77;
-          const clearance=.14+.78*Math.sqrt(Math.max(0,1-z*z));
-          if(Math.abs(z)<1.32&&c.sign*c.goal.x<clearance&&authored&&locomotion>.1&&c.goal.y<origin.y-.03){
-            // Make room for the pressure suit by abducting the entire arm
-            // around its shoulder. Pushing only the wrist outward changes
-            // elbow flexion and destroys the source arm swing.
-            this.v.copy(c.goal).sub(origin);
-            const dx=c.sign*this.v.x,dy=this.v.y,radius=Math.hypot(dx,dy);
-            const target=clearance-c.sign*origin.x;
-            const angle=clamp(-Math.acos(clamp(target/Math.max(radius,.001),-1,1))-Math.atan2(dy,dx),0,.60);
-            // Begin outside the contact envelope and ease into full clearance.
-            // Switching on at its rim snapped the shoulder by ~0.6 radians
-            // each run cycle and forced the wrist to chase a new roll target.
-            const approach=1-smooth(1,1.32,Math.abs(z));
-            this.q.setFromAxisAngle(this.j.set(0,0,1),c.sign*angle*approach*(1-this.run*locomotion));
-            c.goal.copy(this.v.applyQuaternion(this.q)).add(origin);
-            c.pole.sub(origin).applyQuaternion(this.q).add(origin);
-          }else if(Math.abs(z)<1&&c.sign*c.goal.x<clearance)c.goal.x=T.MathUtils.lerp(c.goal.x,c.sign*clearance,1-this.run*locomotion);
-        }
-        if(c.type==='arm'&&authored&&locomotion>.1&&c.goal.y<origin.y-.1&&c.goal.y>1.15&&c.goal.y<2.65&&c.goal.z>.55){
-          // At the front rim, glove fingers extend behind the wrist. Measured
-          // skin contact here was only a few millimetres; more sideways
-          // abduction moved crossed fingers toward the torso. Add at most
-          // 2.3 degrees of forward clearance, rotating elbow and hand together.
-          const needed=.05+.78*Math.sqrt(Math.max(0,1-(c.goal.x/.92)**2));
-          if(c.goal.z<needed){
-            this.v.copy(c.goal).sub(origin);
-            const radius=Math.hypot(this.v.y,this.v.z),ratio=(needed-origin.z)/Math.max(radius,.001);
-            if(ratio<1){
-              const angle=clamp(Math.PI-Math.asin(clamp(ratio,-1,1))-Math.atan2(this.v.z,this.v.y),-.04,0);
-              this.q.setFromAxisAngle(X,angle*(1-this.run*locomotion));
-              c.goal.copy(this.v.applyQuaternion(this.q)).add(origin);
-              c.pole.sub(origin).applyQuaternion(this.q).add(origin);
-            }
+        if(c.type==='arm'&&!(s.laser&&c.side==='R')){
+          if(locomotion>.001)this.armClearance.apply(origin,c.goal,c.pole,c.sign,locomotion*(1-this.run*locomotion));
+          else if(c.goal.y>1.15&&c.goal.y<2.65){
+            // Airborne steering still keeps gloves outside the torso.
+            const z=(c.goal.z-.04)/.77;
+            const clearance=.14+.78*Math.sqrt(Math.max(0,1-z*z));
+            if(Math.abs(z)<1&&c.sign*c.goal.x<clearance)c.goal.x=c.sign*clearance;
           }
         }
         // Authored gait already has coordinated, smooth joint timing. Filter
@@ -286,5 +258,5 @@
     }
   }
   g.GodmanMotionSettings=Object.freeze({walkSpeed:1.8,runSpeed:4.4});
-  g.GodmanCharacterMotion=BodyController;g.GODMAN_MOTION_BUILD='20261103.1';
+  g.GodmanCharacterMotion=BodyController;g.GODMAN_MOTION_BUILD='20261103.2';
 })(typeof window==='undefined'?globalThis:window);
