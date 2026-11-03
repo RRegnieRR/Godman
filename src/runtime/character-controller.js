@@ -42,6 +42,7 @@
       this.chains.forEach(c=>{
         c.lengthA=c.points[0].distanceTo(c.points[1]);c.lengthB=c.points[1].distanceTo(c.points[2]);
         c.filtered=c.points[2].clone();c.targetVelocity=new T.Vector3();c.filteredPole=c.points[1].clone();c.origin=new T.Vector3();
+        c.exhaust=new T.Vector3(0,-1,0);
       });
       this.running=new g.GodmanRunningGait(frame,this.chains);
       this.armClearance=new g.GodmanArmClearance();
@@ -80,10 +81,20 @@
       super.reset();this.gaitSpeed=this.ready=this.headExtension=this.contactOffset=0;
       for(const c of this.chains){c.filtered.copy(c.points[2]);c.targetVelocity.set(0,0,0);c.filteredPole.copy(c.points[1]);}
       for(const t of this.torso)t.bone.quaternion.copy(t.rest);
+      this.rememberPose();
+    }
+    rememberPose(){
+      let joint=0;
+      for(const c of this.chains)for(const n of c.nodes)this.transitionPrevious[joint++].copy(n.quaternion);
     }
     update(dt,s){
       const total=clamp(dt,0,.05),count=Math.max(1,Math.ceil(total*120));
-      for(let i=0;i<count;i++)this.advance(total/count,s);
+      for(let i=0;i<count;i++){
+        this.advance(total/count,s);
+        // The idle mixer writes these bones before each update. Only our
+        // completed output is valid history for the next transition step.
+        this.rememberPose();
+      }
     }
     sampleDirections(c){
       const key=c.side+'_'+c.type,w=this.walkFrames;
@@ -113,7 +124,6 @@
     advance(h,s){
       this.time+=h;
       const previousGround=this.move*(1-this.air);
-      let joint=0;for(const c of this.chains)for(const n of c.nodes)this.transitionPrevious[joint++].copy(n.quaternion);
       // Idle formerly kept moving Center/Hip and clavicles underneath the
       // controller. Own every structural ancestor, not just the limb joints.
       for(const b of this.bodyAnchors){b.bone.quaternion.copy(b.q);b.bone.position.copy(b.p);b.bone.scale.copy(b.s);}
@@ -134,7 +144,10 @@
       this.transitionStep=(7.5+22.5*Math.max(previousGround,this.move*(1-this.air)))*h;
       const powered=Math.max(this.power,this.brake),free=this.air*(1-powered)*(1-this.water);
       const earthAir=free*(1-(s.space||0)),coast=free*(s.space||0);
-      const tuck=earthAir*smooth(.10,.30,s.airTime||0)*(1-smooth(.45,.85,s.airTime||0));
+      const vertical=s.verticalSpeed||0;
+      const rising=smooth(.2,3,vertical),falling=smooth(.3,10,-vertical);
+      const apex=1-smooth(.2,2.5,Math.abs(vertical));
+      const tuck=earthAir*(rising*.65+apex*.25)*smooth(.04,.15,s.airTime||0);
       const impactTime=!s.grounded&&s.verticalSpeed<-.5&&Number.isFinite(s.height)?Math.max(0,s.height)/-s.verticalSpeed:Infinity;
       this.ready=damp(this.ready,(1-smooth(.08,.38,impactTime))*earthAir,10,h);
       const runWeight=this.run*locomotion;
@@ -183,15 +196,30 @@
         if(c.type==='leg'){
           this.v.copy(c.points[2]).applyQuaternion(FACING);this.frame.parent.localToWorld(this.v);this.frame.worldToLocal(this.v);
           c.goal.lerp(this.v,ground);c.pole.set(origin.x,origin.y-.5,origin.z+2);
-          c.goal.y+=tuck*.22+coast*.13+earthAir*.025;c.goal.z-=tuck*.10+coast*.10;
+          c.goal.y+=tuck*.22+coast*.13+earthAir*(.025+falling*.06);c.goal.z-=tuck*.10+coast*.10;
           c.goal.x+=c.sign*(coast*.025+this.ready*.025);c.footPlant=ground;
+          const horizontal=Math.hypot(this.intent.x,this.intent.z);
+          this.v.set(origin.x+c.sign*.06+this.exhaust.x*reach*.42,origin.y-reach*(.92-.22*horizontal),origin.z+this.exhaust.z*reach*.5);
+          c.goal.lerp(this.v,this.air*powered);
+          c.thrustShare=.04+.96*smooth(-.2,.85,this.intent.y);
+          c.exhaust.copy(this.exhaust);
         }else{
           const shoulder=.08,elbow=.35+coast*.35+earthAir*.16;
           this.v.set(c.sign*Math.max(.93,Math.abs(origin.x)+.26),origin.y-c.lengthA*Math.cos(shoulder)-c.lengthB*Math.cos(shoulder+elbow),origin.z+c.lengthA*Math.sin(shoulder)+c.lengthB*Math.sin(shoulder+elbow));
-          c.goal.lerp(this.v,this.air);c.goal.y+=tuck*.38+this.ready*.16;c.goal.z+=tuck*.18+this.ready*.12;
+          c.goal.lerp(this.v,this.air);c.goal.y+=tuck*.38+this.ready*.16+earthAir*falling*.22;c.goal.z+=tuck*.18+this.ready*.12;
+          c.goal.x+=c.sign*earthAir*falling*.15;
           c.pole.set(origin.x+c.sign*.22,origin.y-.65,origin.z-.9);
-          this.v.set(origin.x+c.sign*(.29+this.flightEffort*.12),origin.y-reach*.76,origin.z+.26);
-          this.v.addScaledVector(this.intent,powered*.32);
+          const sideways=smooth(.05,.6,-c.sign*this.intent.x);
+          const foreAft=smooth(.15,.7,Math.abs(this.intent.z));
+          const downward=smooth(.05,.7,-this.intent.y);
+          const drive=Math.max(sideways,foreAft,downward);
+          c.thrustShare=.18+.82*drive;
+          c.exhaust.copy(this.exhaust);
+          this.v.set(origin.x+c.sign*.28,origin.y-reach*.76,origin.z+.22);
+          this.j.copy(origin).addScaledVector(c.exhaust,reach*.94);
+          this.j.x+=c.sign*(foreAft*.20+downward*.3);
+          this.j.z=clamp(this.j.z,origin.z-.5,origin.z+.85);
+          this.v.lerp(this.j,drive);
           this.v.z+=clamp(c.sign*this.angularVelocity.y*.10,-.16,.16);this.v.y+=clamp(c.sign*this.angularVelocity.z*.10,-.16,.16);
           c.goal.lerp(this.v,this.air*powered);
         }
@@ -220,6 +248,19 @@
             const z=(c.goal.z-.04)/.77;
             const clearance=.14+.78*Math.sqrt(Math.max(0,1-z*z));
             if(Math.abs(z)<1&&c.sign*c.goal.x<clearance)c.goal.x=c.sign*clearance;
+          }
+        }
+        if(c.type==='arm'&&powered>.001){
+          // Prevent the pole from crossing the hand ray without changing
+          // the established pose when its elbow plane is already well defined.
+          this.upperDir.copy(c.goal).sub(origin).normalize();
+          this.lowerDir.set(c.sign,0,0).addScaledVector(this.upperDir,-c.sign*this.upperDir.x);
+          const length=this.lowerDir.length();
+          if(length>.001){
+            this.lowerDir.divideScalar(length);this.v.copy(c.pole).sub(origin);
+            const gap=.18-this.v.dot(this.lowerDir);
+            const correction=.5*(gap+Math.sqrt(gap*gap+.0004))*smooth(.05,.35,length)*this.air*powered;
+            c.pole.addScaledVector(this.lowerDir,correction);
           }
         }
         // Authored gait already has coordinated, smooth joint timing. Filter
@@ -258,5 +299,5 @@
     }
   }
   g.GodmanMotionSettings=Object.freeze({walkSpeed:1.8,runSpeed:4.4});
-  g.GodmanCharacterMotion=BodyController;g.GODMAN_MOTION_BUILD='20261103.2';
+  g.GodmanCharacterMotion=BodyController;g.GODMAN_MOTION_BUILD='20261103.14';
 })(typeof window==='undefined'?globalThis:window);

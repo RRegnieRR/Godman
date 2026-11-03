@@ -54,14 +54,15 @@
       this.starColor.lerp(this.horizonColor, horizonWarmth * 0.42);
 
       const eclipse = state.eclipse == null ? 1 : clamp(state.eclipse, 0, 1);
-      const directVisibility = (state.nearAtmosphere ? 0.045 + 0.955 * state.directDay : 1) * eclipse;
+      const directVisibility = (state.surface || state.nearAtmosphere ? state.directDay : 1) * eclipse;
       this.lights.key.color.copy(this.starColor);
       this.lights.key.intensity = perceivedDirect * directVisibility * 1.18;
       this.lights.ambient.intensity = 0.018 + 0.12 * state.skyFactor;
       this.lights.sky.intensity = 0.008 + 0.34 * state.skyFactor;
-      this.lights.rim.color.copy(this.starColor).lerp(this.lights.sky.color, 0.78);
-      this.lights.rim.intensity = state.nearAtmosphere ? 0.025 + 0.16 * state.skyFactor : 0.035;
-      this.lights.headlamp.intensity = state.nearAtmosphere ? 0.06 + 0.52 * (1 - state.directDay) : 0.24;
+      if(this.lights.rim)this.lights.rim.intensity=0;
+      const darkness=1-clamp(perceivedDirect*directVisibility,0,1);
+      const lampTarget=4.5*darkness*darkness;
+      this.lights.headlamp.intensity+=(lampTarget-this.lights.headlamp.intensity)*(1-Math.exp(-state.dt*5));
       return irradiance;
     }
   }

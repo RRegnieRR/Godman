@@ -20,10 +20,12 @@
   #fuelBar { height: 100%; width: 100%; background: #d7eee8; box-shadow: 0 0 5px rgba(180,230,225,.3); }
   #chargeWrap {
     position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%);
-    width: 220px; height: 4px; border: 1px solid var(--line);
-    background: rgba(0,0,0,.45); z-index: 5; display: none;
+    width: min(280px, 70vw); padding: 3px; border: 1px solid rgba(241,234,216,.24);
+    border-radius: 999px; background: rgba(5,9,14,.45); z-index: 5; display: none;
+    --charge-color: #d7eee8;
   }
-  #chargeBar { height: 100%; width: 0%; background: #d9dfbf; transition: background .1s; }
+  #chargeBar { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; height: 8px; border-radius: inherit; overflow: hidden; }
+  #chargeBar span { border-radius: 999px; background: linear-gradient(to right, var(--charge-color) 0 var(--fill,0%), rgba(241,234,216,.12) var(--fill,0%) 100%); }
   #toast {
     position: fixed; top: 22%; left: 50%; transform: translateX(-50%);
     color: var(--paper); font-size: 17px; font-weight: 500; letter-spacing: 3px;

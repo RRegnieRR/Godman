@@ -146,6 +146,7 @@
             supportPosition:kneeSupport?kneeSupport.position.clone():null,supportScale:kneeSupport?kneeSupport.scale.clone():null,toes,neutralFoot,
             positions:nodes.map(n=>n.position.clone()),scales:nodes.map(n=>n.scale.clone()),
             upperBindOffset,basis:new T.Matrix4(),normal:new T.Vector3(),basisY:new T.Vector3(),footPlant:1,
+            nozzleAxis:new T.Vector3(0,-1,0).applyQuaternion(frame.getWorldQuaternion(new T.Quaternion())).applyQuaternion(nodes[2].getWorldQuaternion(new T.Quaternion()).invert()),
             nodes, points, endQ, rest: nodes.map(n => n.quaternion.clone()),
             previous: nodes.map(n => n.quaternion.clone()),
             goal: points[2].clone(), pole: new T.Vector3(),
@@ -177,7 +178,9 @@
         if (this.brake > .1 && velocity.lengthSq() > 1) this.force.copy(velocity).normalize().negate();
         if (this.force.lengthSq() > .5) {
           this.attitudeTilt.setFromUnitVectors(up, this.force.normalize());
-          this.attitudeTilt.slerp(this.attitudeIdentity, 1 - Math.max(this.power, this.brake * .85));
+          const tilt=this.attitudeTilt.angleTo(this.attitudeIdentity);
+          const limit=T.MathUtils.lerp(.28,.8,clamp(space,0,1));
+          this.attitudeTilt.slerp(this.attitudeIdentity,1-Math.min(1,limit/Math.max(tilt,1e-6))*Math.max(this.power,this.brake*.85));
           this.attitudeTarget.premultiply(this.attitudeTilt);
         }
         // Damped attitude servo: turn acceleration and angular velocity persist
@@ -208,6 +211,8 @@
     }
 
     nozzleShare(type,side){
+      const chain=this.chains.find(c=>c.type===(type==='hand'?'arm':'leg')&&c.sign===side);
+      if(chain&&chain.thrustShare!==undefined)return chain.thrustShare;
       const roll=clamp(this.angularVelocity.z*.3+this.flightLoad.x*.25,-.35,.35);
       return type==='hand'?clamp(.30+this.flightEffort*.55+this.brake*.35+side*roll,.15,1)
         :clamp(.9-side*roll*.45,.6,1.1);
@@ -264,7 +269,7 @@
         // Idle contains a deliberately bent relaxed wrist. During running,
         // use the neutral bind alignment so hand and forearm form one line.
         const running=this.move*this.run*(1-this.air)*(1-this.water);
-        end.quaternion.slerp(end.userData.motionBindQuaternion||c.rest[2],running);
+        end.quaternion.slerp(end.userData.motionBindQuaternion||c.rest[2],Math.max(running,this.power,this.brake));
         this.frame.getWorldQuaternion(c.worldQ);
         end.parent.getWorldQuaternion(c.parentQ).invert();
         c.from.copy(X).applyQuaternion(c.worldQ).applyQuaternion(c.parentQ);
@@ -282,6 +287,17 @@
         // In flight the boot follows the shin, instead of remaining horizontal
         // while the lower leg folds away from it.
         end.quaternion.copy(c.neutralFoot).slerp(c.endTarget,(1-this.air)*c.footPlant);
+        const footAim=this.air*Math.max(this.power,this.brake);
+        if(footAim>.001&&c.exhaust){
+          end.getWorldQuaternion(c.worldQ);
+          c.from.copy(c.nozzleAxis).applyQuaternion(c.worldQ).normalize();
+          this.frame.getWorldQuaternion(c.parentQ);c.to.copy(c.exhaust).applyQuaternion(c.parentQ).normalize();
+          c.delta.setFromUnitVectors(c.from,c.to);
+          const angle=c.delta.angleTo(this.attitudeIdentity);
+          c.delta.slerp(this.attitudeIdentity,1-Math.min(1,.6/Math.max(angle,1e-6))*footAim);
+          end.parent.getWorldQuaternion(c.parentQ).invert();
+          end.quaternion.copy(c.parentQ).multiply(c.delta).multiply(c.worldQ);
+        }
         // The IK contact target is not allowed to fold the boot into the calf.
         // These are conservative rig limits, not an attempt to force every
         // planted frame flat by exceeding the available ankle articulation.
@@ -302,7 +318,18 @@
         end.quaternion.copy(c.neutralFoot).multiply(c.delta);
       }
       const runningHand=this.move*this.run*(1-this.air)*(1-this.water);
-      if(c.type==='arm'&&this.power+this.brake+runningHand>.001){
+      const flightHand=Math.max(this.power,this.brake);
+      if(c.type==='arm'&&flightHand>.001&&runningHand<=flightHand){
+        // Suit wrists flex on a hinge; aiming must not roll the whole cuff.
+        // Work in the neutral hand's local frame, with a continuous front
+        // hemisphere target. A behind-palm target is left to the nozzle.
+        this.frame.getWorldQuaternion(c.worldQ);
+        c.to.copy(c.exhaust||this.exhaust).applyQuaternion(c.worldQ);
+        end.getWorldQuaternion(c.parentQ).invert();c.to.applyQuaternion(c.parentQ);
+        const participation=c.thrustShare===undefined?1:smooth(.18,.65,c.thrustShare);
+        const bend=1.05*Math.tanh(Math.atan2(c.to.x,Math.max(.15,-c.to.y))/1.05)*flightHand*participation;
+        c.delta.setFromAxisAngle(c.axis.set(0,0,1),bend);end.quaternion.multiply(c.delta);
+      }else if(c.type==='arm'&&this.power+this.brake+runningHand>.001){
         const flightWeight=Math.max(this.power,this.brake);
         const weight=Math.max(flightWeight,runningHand);
         end.updateWorldMatrix(true,false);
@@ -310,6 +337,7 @@
         c.from.set(0,-1,0).applyQuaternion(c.worldQ).normalize();
         this.frame.getWorldQuaternion(c.worldQ);
         if(runningHand>flightWeight)c.to.set(-c.sign,0,0).applyQuaternion(c.worldQ);
+        else if(c.exhaust)c.to.copy(c.exhaust).applyQuaternion(c.worldQ);
         else if(this.exhaust)c.to.copy(this.exhaust).applyQuaternion(c.worldQ);
         else c.to.set(this.flightLoad.x*.35,-1,this.flightLoad.z*.35).normalize().applyQuaternion(c.worldQ);
         lower.getWorldPosition(c.b);end.getWorldPosition(c.c);
@@ -636,5 +664,17 @@
   global.GodmanCharacterMotion = CharacterMotion;
   global.GodmanRepulsorPlume = createRepulsorPlume;
   global.GodmanRepulsorAnchor = createRepulsorAnchor;
+  const aimWorld=new T.Quaternion(),aimTurn=new T.Quaternion(),aimIdentity=new T.Quaternion(),aimTarget=new T.Vector3();
+  global.GodmanRepulsorAim=function(frame,bone,axis,desired,out){
+    bone.getWorldQuaternion(aimWorld);out.copy(axis).applyQuaternion(aimWorld).normalize();
+    frame.getWorldQuaternion(aimWorld);aimTarget.copy(desired).applyQuaternion(aimWorld).normalize();
+    aimTurn.setFromUnitVectors(out,aimTarget);
+    const angle=aimTurn.angleTo(aimIdentity);
+    // A bounded nozzle gimbal finishes the aim without breaking the wrist or
+    // ankle. Poorly aligned emitters fade instead of firing across the suit.
+    aimTurn.slerp(aimIdentity,1-Math.min(1,.65/Math.max(angle,1e-6)));
+    out.applyQuaternion(aimTurn).normalize();
+    return Math.max(0,out.dot(aimTarget))**2;
+  };
   global.GODMAN_MOTION_BUILD = '20261101.5';
 })(typeof window === 'undefined' ? globalThis : window);

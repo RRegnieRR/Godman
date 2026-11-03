@@ -12,6 +12,7 @@ require('../src/data/athletic-run.js');
 require('../src/runtime/character-motion.js');
 require('../src/runtime/running-gait.js');
 require('../src/runtime/character-controller.js');
+require('../src/runtime/flight-dynamics.js');
 const WALK_SPEED=global.GodmanMotionSettings.walkSpeed,RUN_SPEED=global.GodmanMotionSettings.runSpeed;
 const file=fs.readFileSync(path.join(__dirname,'../assets/character/rigged-astronaut.glb'));
 const jsonLength=file.readUInt32LE(12),gltf=JSON.parse(file.toString('utf8',20,20+jsonLength));
@@ -63,6 +64,34 @@ function rig(){
 const up=new T.Vector3(0,1,0),base=new T.Quaternion(),thrust=new T.Vector3(0,.3,-1).normalize(),velocity=new T.Vector3(0,0,-10);
 function step(r,s,dt=1/60){r.controller.orient(dt,base,up,thrust,velocity,s.grounded,s.water,s.space);r.controller.update(dt,s);}
 function feet(r){return r.controller.chains.filter(c=>c.type==='leg').map(c=>c.nodes[2].getWorldPosition(new T.Vector3()));}
+// Reproduce the real game order: idle mixer first, motion controller second.
+// A fixture without a mixer missed run-entry history being overwritten by idle.
+function idleMixer(r){
+  const idle=gltf.animations.find(a=>a.name==='idle');
+  const tracks=idle.channels.map(c=>{
+    const sampler=idle.samplers[c.sampler],kind=c.target.path;
+    const Track=kind==='rotation'?T.QuaternionKeyframeTrack:T.VectorKeyframeTrack;
+    return new Track(r.nodes[c.target.node].uuid+'.'+({rotation:'quaternion',translation:'position',scale:'scale'}[kind]),values(sampler.input),values(sampler.output));
+  });
+  const mixer=new T.AnimationMixer(r.frame);
+  mixer.clipAction(new T.AnimationClip('idle',-1,tracks)).play();return mixer;
+}
+for(const fps of [30,60,144])for(const startSpeed of [0,WALK_SPEED]){
+  const clean=rig(),mixed=rig(),mixer=idleMixer(mixed),dt=1/fps;
+  let previous=null;
+  // Include a second run entry after leaving the fully baked run path.
+  for(let i=0;i<fps*6;i++){
+    const t=i*dt,speed=t<1?startSpeed:t<2.7?RUN_SPEED:t<3.5?WALK_SPEED:t<5?RUN_SPEED:0;
+    const state={grounded:true,speed};
+    step(clean,state,dt);mixer.update(dt);step(mixed,state,dt);
+    const a=clean.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion));
+    const b=mixed.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion));
+    a.forEach((q,j)=>assert.ok(q.angleTo(b[j])<.02,`Idle mixer corrupted run transition at ${fps}fps / ${t.toFixed(3)}s, joint ${j}`));
+    assert.ok(clean.frame.position.distanceTo(mixed.frame.position)<.002,'Idle mixer changed transition root');
+    if(previous)b.forEach((q,j)=>assert.ok(q.angleTo(previous[j])<30*dt+1e-5,'Run entry snapped when the blend completed'));
+    previous=b.map(q=>q.clone());
+  }
+}
 const r=rig();assert.equal(r.controller.chains.length,4);
 assert.equal(r.controller.runningFingers.length,30,'Runtime GLTF finger names were not bound');
 assert.equal(r.controller.groundTorso.length,3,'Runtime GLTF spine names were not bound');
@@ -407,6 +436,72 @@ while(remaining>1e-8){const h=Math.min(1/120,remaining);step(loopingRun,{grounde
 const loopedJoints=loopingRun.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion));
 loopedJoints.forEach((q,i)=>assert.ok(q.angleTo(initialJoints[i])<.03,'Running stride does not loop back to the same pose'));
 assert.ok(loopingRun.frame.position.distanceTo(initialRoot)<.01,'Running stride changes body height from one loop to the next');
+// Lateral repulsors extend the arm opposite the requested acceleration,
+// preserve heading, and aim actual palm exhaust back against that force.
+for(const direction of [-1,1]){
+  const r=rig(),force=new T.Vector3(direction,0,0);
+  for(let i=0;i<240;i++){
+    r.controller.orient(1/120,base,up,force,velocity,false,false,0);
+    r.controller.update(1/120,{grounded:false,powered:true,throttle:1,space:0,airTime:2,height:10,verticalSpeed:0});
+  }
+  const arms=r.controller.chains.filter(c=>c.type==='arm');
+  const active=arms.find(c=>c.side===(direction>0?'L':'R')),other=arms.find(c=>c!==active);
+  const shoulder=active.nodes[0].getWorldPosition(new T.Vector3()),hand=active.nodes[2].getWorldPosition(new T.Vector3());
+  assert.ok((hand.x-shoulder.x)*direction<-.4,'Strafing extended the wrong arm or failed to reach outward');
+  const exhaust=new T.Vector3(0,-1,0).applyQuaternion(active.nodes[2].getWorldQuaternion(new T.Quaternion()));
+  assert.ok(exhaust.x*direction<-.75,'Active palm exhaust does not oppose lateral thrust');
+  assert.ok(active.thrustShare>other.thrustShare*4,'Inactive palm overpowered the driving palm');
+
+  assert.ok(r.controller.attitude.angleTo(base)<.31,'Lateral steering tipped the whole body sideways');
+}
+// All active nozzles must contribute against the crosshair, including
+// upward/downward aim and forward/backward flight with bounded joint motion.
+for(const force of [new T.Vector3(0,1,0),new T.Vector3(0,-1,0),new T.Vector3(1,0,0),new T.Vector3(0,0,-1),new T.Vector3(0,0,1)]){
+ const r=rig();for(let i=0;i<300;i++){
+  r.controller.orient(1/120,base,up,force,velocity,false,false,0);
+  r.controller.update(1/120,{grounded:false,powered:true,throttle:1,space:0,airTime:2,height:20});
+ }
+ const resultant=new T.Vector3();let hands=0,feetOutput=0;
+ for(const c of r.controller.chains){
+  const axis=c.type==='arm'?new T.Vector3(0,-1,0):c.nozzleAxis,out=new T.Vector3();
+  const alignment=GodmanRepulsorAim(r.frame,c.nodes[2],axis,c.exhaust,out),power=c.thrustShare*alignment;
+  resultant.addScaledVector(out,power);if(c.type==='arm')hands+=power;else feetOutput+=power;
+ }
+ assert.ok(resultant.normalize().dot(force.clone().negate())>.98,'Combined visible exhaust disagrees with requested acceleration');
+ if(force.y>0)assert.ok(feetOutput>hands*3,'Upward aim did not favour the feet');
+ if(force.y<0)assert.ok(hands>feetOutput*8,'Downward aim fired feet against the desired force');
+}
+// Exercise steering through the wrist's wrap/singularity region with the
+// real idle mixer underneath, then gradually release actual engine thrust.
+for(const hz of [30,144])for(const pitch of [-.9,-.3,.3]){
+ const r=rig(),mixer=idleMixer(r),engine=new GodmanFlightDynamics(),v=new T.Vector3(),dt=1/hz;
+ const arms=r.controller.chains.filter(c=>c.type==='arm');
+ for(let i=0;i<hz*11;i++){
+  const t=i*dt,yaw=Math.max(0,t-1)*Math.PI/4;
+  const aim=new T.Vector3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),-Math.cos(yaw)*Math.cos(pitch));
+  engine.update(dt,{velocity:v,gravity:new T.Vector3(0,-9.81,0),up,aim,move:new T.Vector3(),frameVelocity:new T.Vector3(),surface:1,fuel:100,thrust:t<9,braking:false});
+  mixer.update(dt);r.controller.orient(dt,base,up,engine.direction,v,false,false,0);
+  r.controller.update(dt,{grounded:false,powered:engine.powered,throttle:engine.throttle,space:0,airTime:t,height:20,verticalSpeed:0});
+  if(t>2&&r.controller.power>.999){
+    for(const c of arms){
+      const bind=c.nodes[2].userData.motionBindQuaternion;
+      const neutral=bind.clone();
+      const delta=neutral.invert().multiply(c.nodes[2].quaternion).normalize();
+      assert.ok(Math.hypot(delta.x,delta.y)<.005,'Powered wrist rolls the forearm instead of using its flexion hinge');
+      assert.ok(2*Math.atan2(Math.abs(delta.z),Math.abs(delta.w))<1.06,'Powered wrist exceeds its flexion limit');
+    }
+  }
+  for(const c of arms)assert.ok(c.nodes.every(n=>n.quaternion.toArray().every(Number.isFinite)),'Flight arm produced a non-finite rotation');
+ }
+ r.controller.reset();
+ for(const c of arms)assert.ok(c.nodes.every(n=>n.quaternion.toArray().every(Number.isFinite)),'Flight arm failed to reset');
+}
+function fallingPose(verticalSpeed){
+ const r=rig();for(let i=0;i<120;i++)step(r,{grounded:false,space:0,airTime:.5,height:10,verticalSpeed},1/120);
+ return r.controller.chains.map(c=>c.nodes[2].getWorldPosition(new T.Vector3()));
+}
+const ascending=fallingPose(4),descending=fallingPose(-6);
+assert.ok(ascending.some((p,i)=>p.distanceTo(descending[i])>.06),'Fall pose depended only on elapsed air time');
 const source=fs.readFileSync(path.join(__dirname,'../src/game.js'),'utf8');
 // At equal air time, changing requested thrust must change limb targets.
 function flightTarget(x){

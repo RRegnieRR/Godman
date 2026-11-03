@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#05070c">
 <title>Godman</title>
-<link rel="stylesheet" href="styles/game.css?v=20260903.7">
+<link rel="stylesheet" href="styles/game.css?v=20261103.9">
 <link rel="preload" as="image" href="assets/earth/earth_day_2048.jpg">
 <link rel="preload" as="image" href="assets/earth/earth_specular_2048.jpg">
 <link rel="preload" as="image" href="assets/earth/earth_clouds_1024.png">
@@ -35,7 +35,7 @@
   <div id="fuelLabel">REPULSOR CHARGE</div>
   <div id="fuelOuter"><div id="fuelBar"></div></div>
 </div>
-<div id="chargeWrap"><div id="chargeBar"></div></div>
+<div id="chargeWrap" role="progressbar" aria-label="Jump charge" aria-valuemin="1" aria-valuemax="16" aria-valuenow="1"><div id="chargeBar" aria-hidden="true"></div></div>
 <div id="crosshair"></div>
 <div id="youAreHere" aria-hidden="true">You are here</div>
 <div id="toast"></div>
@@ -78,8 +78,10 @@
   <div class="panel" id="panelInfo">
     <h2>Info &amp; Controls</h2>
     <span class="key">W A S D</span> move · <span class="key">Shift</span> run · <span class="key">Mouse</span> look<br>
-    <span class="key">SPACE</span> on ground: hold to charge a jump toward your crosshair, release to launch<br>
-    <span class="key">SPACE</span> in the air: hand + foot repulsors toward the crosshair<br>
+    <span class="key">SPACE</span> on ground: hold to charge, release to jump toward the crosshair. Aim higher for a higher arc.<br>
+    The rounded meter has 16 stages over 5 seconds. The first is a human-height jump; each following stage doubles the height. Full charge can clear the atmosphere when aimed upward.<br>
+    <span class="key">SPACE</span> in the air: thrust toward the crosshair · aim up to climb, down to descend<br>
+    The shoulder flashlight automatically lights the path ahead in darkness and follows your view.<br>
     <span class="key">C</span> overview camera — zoom far out, orbit with the mouse, C again to return<br>
     <span class="key">F</span> find a planet, star, black hole, nebula, or galaxy and smoothly inspect it<br>
     <span class="key">H</span> hide/show orbit paths and all labels inside the universe (the HUD stays visible)<br>
@@ -105,14 +107,18 @@
 <script src="src/config.js?v=20260826.3" defer></script>
 <script src="src/data/nasa-exoplanets.js?v=20260901.4" defer></script>
 <script src="src/runtime/adaptive-quality.js?v=20260826.3" defer></script>
-<script src="src/runtime/atmosphere.js?v=20260826.3" defer></script>
-<script src="src/runtime/physical-lighting.js?v=20260826.3" defer></script>
+<script src="src/runtime/atmosphere.js?v=20261103.3" defer></script>
+<script src="src/runtime/physical-lighting.js?v=20261103.10" defer></script>
+<script src="src/runtime/planetary-sky.js?v=20261103.5" defer></script>
 <script src="src/runtime/deep-sky.js?v=20260903.25" defer></script>
-<script src="src/runtime/character-motion.js?v=20261103.2" defer></script>
+<script src="src/runtime/character-motion.js?v=20261103.14" defer></script>
 <script src="src/data/athletic-run.js?v=20261103.2" defer></script>
 <script src="src/runtime/running-gait.js?v=20261103.2" defer></script>
 <script src="src/data/walk-motion.js?v=20261102.5" defer></script>
-<script src="src/runtime/character-controller.js?v=20261103.2" defer></script>
-<script src="src/game.js?v=20261102.5" defer></script>
+<script src="src/runtime/character-controller.js?v=20261103.14" defer></script>
+<script src="src/runtime/flight-dynamics.js?v=20261103.14" defer></script>
+<script src="src/runtime/terrain-surface.js?v=20261103.8" defer></script>
+<script src="src/runtime/shoulder-flashlight.js?v=20261103.10" defer></script>
+<script src="src/game.js?v=20261103.14" defer></script>
 </body>
 </html>

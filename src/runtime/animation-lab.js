@@ -18,16 +18,19 @@
   const visual=new T.Group();visual.rotation.y=Math.PI;player.add(visual);
   const mode=document.getElementById('pose'),scrub=document.getElementById('scrub'),status=document.getElementById('status');
   const requestedMotion=new URLSearchParams(location.search).get('motion');
+  for(const [value,label] of [['strafeleft','Repulsors · steer left'],['straferight','Repulsors · steer right'],['recovery','Fall → lift → climb'],['armsweep','Repulsors · arm sweep & release']])mode.add(new Option(label,value));
   if(Array.from(mode.options).some(option=>option.value===requestedMotion))mode.value=requestedMotion;
   const seek=document.getElementById('seek'),rate=document.getElementById('rate');
   let controller,mixer,idleAction,walkAction,time=0,paused=false,theta=Math.PI+.35,phi=1.35,distance=innerWidth<700?6.5:4.4;
   const effects=[],clock=new T.Clock(),q=new T.Quaternion(),v=new T.Vector3();
   const axis=new T.Vector3(0,-1,0),up=new T.Vector3(0,1,0),thrust=new T.Vector3(),velocity=new T.Vector3();
+  const previewFlight=new GodmanFlightDynamics(),previewPosition=new T.Vector3(0,12,0),previewVelocity=new T.Vector3(0,-7,0);
+  const previewGravity=new T.Vector3(0,-9.81,0),previewZero=new T.Vector3();
   let lastState={},travel=0;
   const gaitSettings=window.GodmanMotionSettings||{walkSpeed:1.8,runSpeed:4.4};
   const gravity=9.81,jumpHeight=1.1,jumpVelocity=Math.sqrt(2*gravity*jumpHeight),jumpDuration=2*jumpVelocity/gravity;
   const landingHeight=1.2,landingTime=Math.sqrt(2*landingHeight/gravity);
-  const sequenceDuration=()=>['transitions','reverse'].includes(mode.value)?8:mode.value==='fall'?1.2:4;
+  const sequenceDuration=()=>mode.value==='armsweep'?11:['transitions','reverse'].includes(mode.value)?8:mode.value==='fall'?1.2:4;
   const ease=(a,b,t)=>T.MathUtils.smoothstep(t,a,b);
   function impactPulse(t){return t<0?0:Math.sin(Math.min(1,t/.14)*Math.PI/2)*Math.exp(-Math.max(0,t-.14)*5);}
   function stateAt(t){
@@ -53,9 +56,13 @@
       s.stage=s.grounded?'Absorb / recover':'Approach ground';
     }
     if(['fall','coast','hover','cruise','turn','reverse','brake','swim'].includes(m)){s.grounded=false;s.airTime=t;s.height=.55;}
+    if(['strafeleft','straferight','recovery'].includes(m)){
+      s.grounded=false;s.airTime=t;s.height=2;s.powered=m!=='recovery'||t>=.45;
+      s.stage=m==='recovery'?(t<.45?'Falling':previewVelocity.y<0?'Arrest fall':'Climb'):m==='straferight'?'Left arm drives right':'Right arm drives left';
+    }
     if(m==='fall'){s.height=8-.5*gravity*t*t;s.verticalSpeed=-gravity*t;}
     if(['coast','hover','cruise','turn','reverse','brake'].includes(m))s.space=1;
-    s.powered=['hover','cruise','turn','reverse'].includes(m);s.brake=m==='brake'?1:0;
+    s.powered=s.powered||['hover','cruise','turn','reverse'].includes(m);s.brake=m==='brake'?1:0;
     if(m==='reverse'){
       s.powered=t<6;s.brake=t>=6&&t<7?1:0;
       s.flightYaw=t<3?0:t<4?-Math.PI/2:t<5?Math.PI/2:Math.PI;
@@ -63,6 +70,12 @@
       s.stage=t<1?'Hover':t<3?'Forward thrust':t<4?'Turn left':t<5?'Reverse right':t<6?'Reverse thrust':t<7?'Brake':'Coast';
     }
     s.throttle=Number(document.getElementById('flightPower').value);s.powered=s.powered&&s.throttle>.01;
+    if(m==='armsweep'){
+      s.grounded=false;s.airTime=t;s.height=2;
+      s.throttle*=t<9?1-Math.exp(-4.5*t):Math.exp(-6*(t-9));s.powered=s.throttle>.015;
+      s.flightYaw=Math.max(0,t-1)*Math.PI/4;s.flightTilt=Math.PI/2+.9;
+      s.stage=t<9?'Steer through a full turn':'Ease off / settle';
+    }
     s.turn=m==='turn'?Math.sin(t*1.7):0;s.water=m==='swim';return s;
   }
   function step(dt,t){
@@ -75,6 +88,13 @@
     const yaw=Number(document.getElementById('flightYaw').value)*Math.PI/180+s.turn*.7+(s.flightYaw||0);
     const tilt=(s.flightTilt===undefined?-pitch:s.flightTilt)+Number(document.getElementById('flightPitch').value)*Math.PI/180;
     thrust.set(Math.sin(yaw)*Math.sin(tilt),Math.cos(tilt),-Math.cos(yaw)*Math.sin(tilt));
+    if(mode.value==='strafeleft'||mode.value==='straferight')thrust.set(mode.value==='straferight'?1:-1,0,0);
+    if(mode.value==='recovery'){
+      previewFlight.update(dt,{velocity:previewVelocity,gravity:previewGravity,up,aim:up,move:previewZero,frameVelocity:previewZero,surface:1,fuel:100,thrust:s.powered,braking:false});
+      previewFlight.integrate(previewPosition,previewVelocity,dt);
+      s.height=previewPosition.y;s.verticalSpeed=previewVelocity.y;s.throttle=previewFlight.throttle;
+      thrust.copy(previewFlight.direction);
+    }
     if(mode.value==='reverse'){
       if(s.powered)velocity.lerp(v.copy(thrust).multiplyScalar(10),1-Math.exp(-dt*2));
       else if(s.brake)velocity.multiplyScalar(Math.exp(-dt*3));
@@ -88,7 +108,10 @@
       e.locator.getWorldPosition(e.fx.position);
       e.locator.parent.getWorldQuaternion(q);
       v.copy(e.locator.userData.exhaustAxis).applyQuaternion(q);e.fx.quaternion.setFromUnitVectors(axis,v);
-      const strength=Math.max(controller.throttle,controller.brake*.65)*controller.nozzleShare(e.type==='leg'?'foot':'hand',e.locator.parent.name.startsWith('L')?1:-1);
+      const chain=controller.chains.find(c=>c.nodes[2]===e.locator.parent);
+      const alignment=GodmanRepulsorAim(visual,e.locator.parent,e.locator.userData.exhaustAxis,chain.exhaust,v);
+      e.fx.quaternion.setFromUnitVectors(axis,v);
+      const strength=alignment*Math.max(controller.throttle,controller.brake*.65)*controller.nozzleShare(e.type==='leg'?'foot':'hand',e.locator.parent.name.startsWith('L')?1:-1);
       e.fx.visible=strength>.01;
       e.fx.userData.material.uniforms.strength.value=strength;
       e.fx.userData.material.uniforms.time.value=t;
@@ -119,10 +142,11 @@
         joints:c.nodes.map(n=>({q:n.quaternion.toArray(),position:visual.worldToLocal(n.getWorldPosition(new T.Vector3())).toArray()}))}))});
     reset();step(0,0);
   },undefined,e=>{document.getElementById('loading').textContent='Model failed to load';console.error(e);});
-  function cyclicMode(){return !['jump','land','fall','transitions','reverse'].includes(mode.value);}
+  function cyclicMode(){return !['jump','land','fall','transitions','reverse','recovery','armsweep'].includes(mode.value);}
   function syncTime(){const shown=cyclicMode()?time%sequenceDuration():time;scrub.value=shown;seek.value=shown.toFixed(2);}
   function reset(){
     time=0;travel=0;velocity.set(0,0,0);scrub.max=seek.max=sequenceDuration();syncTime();
+    previewFlight.reset();previewPosition.set(0,12,0);previewVelocity.set(0,-7,0);
     if(controller){player.position.set(0,0,0);player.quaternion.identity();controller.reset();mixer.setTime(0);}
   }
   mode.onchange=()=>{reset();if(controller)step(0,0);};

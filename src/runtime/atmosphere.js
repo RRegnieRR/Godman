@@ -18,7 +18,7 @@
       }
 
       const altitudeFade = Math.max(0, Math.min(1,
-        1 - state.altitude / Math.max(1, state.bodyRadius * this.options.fadeAltitudeRatio)));
+        1 - state.altitude / Math.max(1, state.fadeHeight || state.bodyRadius * this.options.fadeAltitudeRatio)));
       const haze = altitudeFade * (0.32 + state.skyFactor * 0.68);
       const density = this.options.surfaceFogDensity +
         (this.options.mountainFogDensity - this.options.surfaceFogDensity) * state.skyFactor;
