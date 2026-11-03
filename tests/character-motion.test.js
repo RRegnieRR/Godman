@@ -5,10 +5,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const T=global.THREE=require('../vendor/three.r128.min.js');
-require('../src/runtime/character-motion.js');
-require('../src/runtime/character-controller.js');
-global.window=global;require('../src/data/run-motion.js');
+global.window=global;
+require('../src/data/run-motion.js');
 require('../src/data/walk-motion.js');
+require('../src/data/athletic-run.js');
+require('../src/runtime/character-motion.js');
+require('../src/runtime/running-gait.js');
+require('../src/runtime/character-controller.js');
 const WALK_SPEED=global.GodmanMotionSettings.walkSpeed,RUN_SPEED=global.GodmanMotionSettings.runSpeed;
 const file=fs.readFileSync(path.join(__dirname,'../assets/character/rigged-astronaut.glb'));
 const jsonLength=file.readUInt32LE(12),gltf=JSON.parse(file.toString('utf8',20,20+jsonLength));
@@ -64,7 +67,6 @@ const r=rig();assert.equal(r.controller.chains.length,4);
 assert.equal(r.controller.runningFingers.length,30,'Runtime GLTF finger names were not bound');
 assert.equal(r.controller.groundTorso.length,3,'Runtime GLTF spine names were not bound');
 assert.equal(r.controller.chains.reduce((sum,c)=>sum+c.segments.length,0),20,'Runtime GLTF sleeve helper names were not bound');
-assert.ok(GodmanRunMotion.frames.filter(f=>Math.min(f.footClearance.L,f.footClearance.R)>.03).length>=20,'Authored run lost its whole-clip aerial clearance');
 assert.ok(GodmanWalkMotion.frames.filter(f=>Math.min(f.footClearance.L,f.footClearance.R)>.03).length<=2,'Walking reference unexpectedly has a running flight phase');
 for(let i=0;i<120;i++)step(r,{grounded:true});
 const planted=feet(r);
@@ -80,9 +82,13 @@ let worstStep=0;
 for(const s of states){
   for(let i=0;i<240;i++){
     const before=r.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion.clone()));
+    const previousGroundResponse=r.controller.move*(1-r.controller.air);
     step(r,{...s,turn:Math.sin(i*.1)});
     const after=r.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion));
-    after.forEach((q,k)=>{assert.ok(q.toArray().every(Number.isFinite));assert.ok(Math.abs(q.length()-1)<1e-5);const change=q.angleTo(before[k]);worstStep=Math.max(worstStep,change);assert.ok(change<=(7.5+22.5*r.controller.move*(1-r.controller.air))/60+1e-6,'Joint exceeded state-specific tracking limit');});
+    // Takeoff blends across substeps; its first substep still has more ground
+    // response than the final state. Bound the whole frame by both endpoints.
+    const groundResponse=Math.max(previousGroundResponse,r.controller.move*(1-r.controller.air));
+    after.forEach((q,k)=>{assert.ok(q.toArray().every(Number.isFinite));assert.ok(Math.abs(q.length()-1)<1e-5);const change=q.angleTo(before[k]);worstStep=Math.max(worstStep,change);assert.ok(change<=(7.5+22.5*groundResponse)/60+1e-6,'Joint exceeded state-specific tracking limit');});
     for(const c of r.controller.chains){
       assert.ok([...c.filtered.toArray(),...c.targetVelocity.toArray(),...c.filteredPole.toArray()].every(Number.isFinite),'Movement transition produced non-finite endpoint state');
       const a=c.nodes[0].getWorldPosition(new T.Vector3()),b=c.nodes[1].getWorldPosition(new T.Vector3()),e=c.nodes[2].getWorldPosition(new T.Vector3());
@@ -204,27 +210,81 @@ assert.equal(collisions,0,'Skinned glove penetrated the torso/hip clearance enve
 // be well above the floor while the sole correctly touches it (and vice versa).
 const bootSurface=Object.values(soleCandidates).flat();
 assert.ok(bootSurface.length>1000,'Actual boot surface samples were not loaded');
-function lowestBoot(r){
+function lowestBoot(r,side){
   r.frame.updateWorldMatrix(true,true);
   skin.joints.forEach((node,j)=>matrices[j].multiplyMatrices(r.nodes[node].matrixWorld,inverses[j]));
   let low=Infinity;
-  for(const sample of bootSurface){
+  for(const sample of side?soleCandidates[side]:bootSurface){
     point.set(0,0,0);
     for(let k=0;k<4;k++)point.addScaledVector(transformed.copy(sample.p).applyMatrix4(matrices[sample.ids[k]]),sample.weights[k]);
     low=Math.min(low,point.y);
   }
   return low;
 }
-const bootRanges={};
+const bootRanges={},floor=-.62*.45;
+let sourceStanceContacts=0;
 for(const speed of [WALK_SPEED,RUN_SPEED]){
   const r=rig(),heights=[];
-  for(let i=0;i<360;i++){step(r,{grounded:true,speed});if(i>120&&i%3===0)heights.push(lowestBoot(r));}
+  for(let i=0;i<360;i++){
+    step(r,{grounded:true,speed});if(i<=120||i%3!==0)continue;
+    heights.push(lowestBoot(r));
+    if(speed===RUN_SPEED){
+      const f=r.controller.phase*(GodmanRunMotion.frames.length-1),k=Math.floor(f),u=f-k;
+      const a=GodmanRunMotion.frames[k],b=GodmanRunMotion.frames[Math.min(k+1,GodmanRunMotion.frames.length-1)];
+      for(const side of ['L','R'])if(T.MathUtils.lerp(a.footClearance[side],b.footClearance[side],u)<=.015){
+        sourceStanceContacts++;
+        assert.ok(Math.abs(lowestBoot(r,side)-floor)<.03,`${side} support boot lost the athletic reference's ground contact`);
+      }
+    }
+  }
   bootRanges[speed]={low:Math.min(...heights),high:Math.max(...heights)};
 }
-const floor=-.62*.45;
+assert.ok(sourceStanceContacts>=20,'Source-aligned running stance contacts were not exercised');
 assert.ok(bootRanges[WALK_SPEED].low>floor-.03&&bootRanges[WALK_SPEED].high<floor+.03,'Walk lost continuous sole contact by more than 3 cm');
-assert.ok(bootRanges[RUN_SPEED].high>floor+.06,'Run root correction pinned a boot down through the authored flight phase');
+assert.ok(bootRanges[RUN_SPEED].high>floor+.06,'Run lost its airborne stride phase');
 assert.ok(bootRanges[RUN_SPEED].low>floor-.03,'Running boot penetrated the floor by more than 3 cm');
+assert.ok(bootRanges[RUN_SPEED].low<floor+.03,'Running boots never reach ground contact');
+
+// The athletic body's bounce reaches about 19.6 m/s². A finite difference
+// expressed as physical acceleration catches contact jolts at every rate,
+// without replacing the reference bounce with the flatter procedural run.
+for(const hz of [60,120,240]){
+  const r=rig();let previousY,previousVelocity,maxChange=0;
+  for(let i=0;i<hz*5;i++){
+    step(r,{grounded:true,speed:RUN_SPEED},1/hz);
+    const y=r.frame.getWorldPosition(new T.Vector3()).y;
+    const velocity=previousY===undefined?undefined:(y-previousY)*hz;
+    if(i>=hz*2&&previousVelocity!==undefined)maxChange=Math.max(maxChange,Math.abs(velocity-previousVelocity));
+    previousY=y;previousVelocity=velocity;
+  }
+  const acceleration=maxChange*hz;
+  assert.ok(acceleration<20,`Run body jolted at ${hz} Hz (${acceleration.toFixed(2)} m/s²)`);
+}
+// Inspect final visible rotations, after all animation processing. A capped
+// angular speed can still reverse suddenly. Compare actual
+// angular-velocity vectors at two rates: a hidden discontinuity grows as the
+// sampling interval shrinks, while a smooth turn has a converging acceleration.
+const runJointAcceleration={};
+for(const hz of [120,240]){
+  const r=rig(),joints=r.controller.chains.flatMap(c=>c.nodes.map((bone,i)=>({bone,type:c.type,name:c.side+' '+(c.type==='leg'?['thigh','knee','ankle']:['shoulder','elbow','wrist'])[i]})));
+  const previous=joints.map(j=>j.bone.quaternion.clone().normalize());
+  const previousVelocity=joints.map(()=>null),peaks=joints.map(()=>0);
+  for(let i=0;i<hz*5;i++){
+    step(r,{grounded:true,speed:RUN_SPEED},1/hz);
+    joints.forEach((joint,j)=>{
+      const current=joint.bone.quaternion.clone().normalize();
+      const delta=current.clone().multiply(previous[j].clone().invert()).normalize();
+      if(delta.w<0)delta.set(-delta.x,-delta.y,-delta.z,-delta.w);
+      const sin=Math.hypot(delta.x,delta.y,delta.z);
+      const velocity=new T.Vector3(delta.x,delta.y,delta.z).multiplyScalar(2*Math.atan2(sin,delta.w)*hz/Math.max(sin,1e-10));
+      if(i>=hz*2&&previousVelocity[j])peaks[j]=Math.max(peaks[j],velocity.distanceTo(previousVelocity[j])*hz);
+      previous[j].copy(current);previousVelocity[j]=velocity;
+    });
+  }
+  joints.forEach((joint,j)=>assert.ok(peaks[j]<(joint.type==='leg'?1600:1200),`${joint.name} running rotation jolted at ${hz} Hz (${peaks[j].toFixed(0)} rad/s²)`));
+  runJointAcceleration[hz]=peaks;
+}
+runJointAcceleration[240].forEach((peak,j)=>assert.ok(peak<Math.max(1,runJointAcceleration[120][j]*1.6),`Running joint ${j} acceleration grows with finer sampling`));
 
 // The production idle mixer runs before the body controller. Later idle keys
 // used to rotate/translate the pelvis and clavicles behind the solver's back;
@@ -243,33 +303,80 @@ for(let i=0;i<180;i++){
     assert.ok(expected.getWorldQuaternion(new T.Quaternion()).normalize().angleTo(actual.getWorldQuaternion(new T.Quaternion()).normalize())<1e-6,'Idle mixer retained a competing joint rotation');
   }
 }
-// Glove clearance must not turn an athletic bent-arm swing into a straight
-// hanging arm. Measure actual elbow geometry across several complete strides.
+// Preserve the athletic reference: a strong shoulder pump, variable elbow
+// flexion, deep heel recovery and forward torso lean. A smooth but shallow
+// sinusoidal mannequin run must not pass by satisfying counter-swing alone.
 const runningRig=rig();
-let trackingSamples=0,upperTrackingError=0,lowerTrackingError=0,maxTrackingError=0;
+const runRanges={L:{arm:[],thigh:[],knee:[],elbow:[]},R:{arm:[],thigh:[],knee:[],elbow:[]}};
+const sourceErrors={};
+const canonicalFacing=new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),Math.PI);
+let torsoError=0,torsoSamples=0;
 for(let i=0;i<300;i++){
   step(runningRig,{grounded:true,speed:RUN_SPEED});if(i<120)continue;
-  for(const c of runningRig.controller.chains.filter(c=>c.type==='arm')){
+  const f=runningRig.controller.phase*(GodmanRunMotion.frames.length-1),k=Math.floor(f),u=f-k;
+  const sourceA=GodmanRunMotion.frames[k],sourceB=GodmanRunMotion.frames[Math.min(k+1,GodmanRunMotion.frames.length-1)];
+  for(const c of runningRig.controller.chains){
     const p=c.nodes.map(n=>n.getWorldPosition(new T.Vector3()));
-    const elbow=p[0].sub(p[1]).angleTo(p[2].sub(p[1]));
-    assert.ok(elbow>.9&&elbow<2.2,'Running elbow lost its bent athletic carriage');
-    // Valid bones alone missed the old puppet motion: damping plus wrist
-    // clamps discarded most of the authored swing (mean forearm error >50°).
-    // Compare measured directions to independent source samples, allowing the
-    // small whole-arm suit-clearance adjustment but no wholesale new gait.
-    const f=runningRig.controller.phase*(global.GodmanRunMotion.frames.length-1),k=Math.floor(f),u=f-k;
-    const a=global.GodmanRunMotion.frames[k][c.side+'_arm'],b=global.GodmanRunMotion.frames[Math.min(k+1,60)][c.side+'_arm'];
-    const upperExpected=new T.Vector3().fromArray(a).lerp(new T.Vector3().fromArray(b),u).normalize().applyQuaternion(runningRig.controller.bodyInverse);
-    const lowerExpected=new T.Vector3().fromArray(a,3).lerp(new T.Vector3().fromArray(b,3),u).normalize().applyQuaternion(runningRig.controller.bodyInverse);
-    // p[0]/p[2] were subtracted above for the interior-angle measurement.
-    const measured=c.nodes.map(n=>runningRig.frame.worldToLocal(n.getWorldPosition(new T.Vector3())));
-    const upperError=measured[1].clone().sub(measured[0]).normalize().angleTo(upperExpected);
-    const lowerError=measured[2].clone().sub(measured[1]).normalize().angleTo(lowerExpected);
-    upperTrackingError+=upperError;lowerTrackingError+=lowerError;maxTrackingError=Math.max(maxTrackingError,upperError,lowerError);trackingSamples++;
+    const angle=p[0].clone().sub(p[1]).angleTo(p[2].clone().sub(p[1]));
+    const canonical=p.map(point=>runningRig.player.worldToLocal(point.clone()).applyQuaternion(canonicalFacing));
+    const upper=canonical[1].clone().sub(canonical[0]).normalize(),lower=canonical[2].clone().sub(canonical[1]).normalize();
+    const ranges=runRanges[c.side];
+    if(c.type==='arm'){
+      assert.ok(angle>.9&&angle<2.2,'Running elbow lost its bent athletic carriage');
+      ranges.arm.push(upper.z);ranges.elbow.push(Math.PI-angle);
+    }else{
+      ranges.thigh.push(upper.z);ranges.knee.push(Math.PI-angle);
+    }
+    const key=c.side+'_'+c.type,a=sourceA[key],b=sourceB[key];
+    const expectedUpper=new T.Vector3().fromArray(a).lerp(new T.Vector3().fromArray(b),u).normalize();
+    const expectedLower=new T.Vector3().fromArray(a,3).lerp(new T.Vector3().fromArray(b,3),u).normalize();
+    const errors=sourceErrors[key]||(sourceErrors[key]={upper:0,lower:0,max:0,count:0});
+    const upperError=upper.angleTo(expectedUpper),lowerError=lower.angleTo(expectedLower);
+    errors.upper+=upperError;errors.lower+=lowerError;errors.max=Math.max(errors.max,upperError,lowerError);errors.count++;
   }
+  const chest=runningRig.controller.torso.find(t=>t.source==='Spine2');
+  const actual=canonicalFacing.clone().multiply(runningRig.player.getWorldQuaternion(new T.Quaternion()).invert()).multiply(chest.bone.getWorldQuaternion(new T.Quaternion())).multiply(chest.inFrame.clone().invert()).normalize();
+  const expected=new T.Quaternion().fromArray(sourceA.torso.Spine2).slerp(new T.Quaternion().fromArray(sourceB.torso.Spine2),u).normalize();
+  torsoError+=actual.angleTo(expected);torsoSamples++;
 }
-assert.ok(upperTrackingError/trackingSamples<.18&&lowerTrackingError/trackingSamples<.18,'Run no longer follows the authored shoulder/elbow timing');
-assert.ok(maxTrackingError<.65,'Run contains a gross limb-direction distortion');
+for(const ranges of Object.values(runRanges)){
+  assert.ok(Math.max(...ranges.arm)-Math.min(...ranges.arm)>.80,'Running arm swing lost the athletic shoulder pump');
+  assert.ok(Math.max(...ranges.elbow)-Math.min(...ranges.elbow)>.30,'Running elbows became fixed hinges');
+  assert.ok(Math.max(...ranges.knee)>1.8&&Math.max(...ranges.knee)-Math.min(...ranges.knee)>1.2,'Running knee lost deep heel recovery');
+  const armMean=ranges.arm.reduce((a,b)=>a+b)/ranges.arm.length,thighMean=ranges.thigh.reduce((a,b)=>a+b)/ranges.thigh.length;
+  let covariance=0,armVariance=0,thighVariance=0;
+  for(let i=0;i<ranges.arm.length;i++){
+    const arm=ranges.arm[i]-armMean,thigh=ranges.thigh[i]-thighMean;
+    covariance+=arm*thigh;armVariance+=arm*arm;thighVariance+=thigh*thigh;
+  }
+  assert.ok(covariance/Math.sqrt(armVariance*thighVariance)<-.5,'Running arms do not counter the same-side thighs');
+}
+let armUpperError=0,armLowerError=0,armSamples=0;
+for(const [key,errors]of Object.entries(sourceErrors)){
+  const arm=key.endsWith('_arm');
+  assert.ok(errors.upper/errors.count<(arm?.30:.22)&&errors.lower/errors.count<(arm?.30:.25),`${key} lost the original athletic timing or swing`);
+  assert.ok(errors.max<.65,`${key} grossly distorted the athletic reference`);
+  if(arm){armUpperError+=errors.upper;armLowerError+=errors.lower;armSamples+=errors.count;}
+}
+// The original reference check averaged both arms: the pressure suit needs
+// more glove clearance on its left side, without changing the shoulder pump.
+assert.ok(armUpperError/armSamples<.18&&armLowerError/armSamples<.18,'Run lost the original athletic shoulder/elbow timing');
+assert.ok(torsoError/torsoSamples<.12,'Run lost the athletic forward torso lean');
+// A complete settled stride must return to the same pose and height. Derive
+// the period from the running phase so this check does not prescribe cadence.
+const loopingRun=rig();
+for(let i=0;i<480;i++)step(loopingRun,{grounded:true,speed:RUN_SPEED},1/120);
+const initialPhase=loopingRun.controller.phase;
+const initialJoints=loopingRun.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion.clone()));
+const initialRoot=loopingRun.frame.position.clone();
+step(loopingRun,{grounded:true,speed:RUN_SPEED},1/120);
+const cadence=((loopingRun.controller.phase-initialPhase+1)%1)*120;
+assert.ok(cadence>1&&cadence<2.5,'Run cadence is outside a usable stride range');
+let remaining=1/cadence-1/120;
+while(remaining>1e-8){const h=Math.min(1/120,remaining);step(loopingRun,{grounded:true,speed:RUN_SPEED},h);remaining-=h;}
+const loopedJoints=loopingRun.controller.chains.flatMap(c=>c.nodes.map(n=>n.quaternion));
+loopedJoints.forEach((q,i)=>assert.ok(q.angleTo(initialJoints[i])<.03,'Running stride does not loop back to the same pose'));
+assert.ok(loopingRun.frame.position.distanceTo(initialRoot)<.01,'Running stride changes body height from one loop to the next');
 const source=fs.readFileSync(path.join(__dirname,'../src/game.js'),'utf8');
 // At equal air time, changing requested thrust must change limb targets.
 function flightTarget(x){
@@ -286,4 +393,4 @@ function flightTarget(x){
 }
 assert.ok(flightTarget(1).distanceTo(flightTarget(-1))>.02,'Flight hands ignored changing thrust direction');
 assert.ok(!source.includes('poseJoint('));assert.ok(!source.includes('updateAuthoredRepulsorIK('));
-console.log(`PASS: actual sanitized GLB; 30 finger, 3 spine, 20 sleeve helper bindings; knee-Z/elbow-Y hinges and deformation helpers; planted crouch, authored walk/run with real flight, jump/landing approach, coast, flight, brake, swimming; ${handSamples.length} glove and ${bootSurface.length} boot surface samples; 30/144fps convergence. Max joint step ${worstStep.toFixed(3)} rad.`);
+console.log(`PASS: actual sanitized GLB; 30 finger, 3 spine, 20 sleeve helper bindings; knee-Z/elbow-Y hinges and deformation helpers; planted crouch, authored walk and suit running with real flight, jump/landing approach, coast, flight, brake, swimming; ${handSamples.length} glove and ${bootSurface.length} boot surface samples; 30/144fps convergence. Max joint step ${worstStep.toFixed(3)} rad.`);

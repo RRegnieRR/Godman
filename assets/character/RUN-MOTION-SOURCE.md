@@ -29,3 +29,11 @@ ankle height over the entire clip as their reference floor, in source leg-length
 units. This preserves the run's aerial phase; recomputing a floor per frame
 would incorrectly keep one foot on the ground. Foot clearance measures the
 ankle joint, so it is not by itself an exact mesh-sole collision/contact flag.
+
+`src/data/athletic-run.js` is the same running reference retargeted onto the
+bundled astronaut's actual bones. `node tools/bake-athletic-run.cjs` regenerates
+it using the bundled direction data and suit. The bake prepares pressure-suit
+hand clearance, smooth periodic local rotations, and mesh-sole contact offline.
+Runtime playback interpolates those final poses rather than retargeting the
+reference or solving foot contact on every frame. No Soldier geometry or
+textures are included in the baked clip.

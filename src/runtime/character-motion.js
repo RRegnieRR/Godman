@@ -254,7 +254,12 @@
         const angle=2*Math.atan2(sin,c.delta.w);
         // The imported ankle axes differ between legs. Use a bind-relative
         // cone, not XYZ clamps that incorrectly clip normal dorsiflexion.
-        const bounded=Math.min(angle,.65);
+        // Ease into the running ankle limit instead of abruptly stopping its
+        // angular velocity at the cone boundary. Sole adaptation otherwise
+        // transfers that catch into the knee and thigh on the next solve.
+        const u=clamp((angle-.5)/.3,0,1);
+        const softBound=angle<=.5?angle:angle>=.8?.65:.5+.3*(u-u**3+.5*u**4);
+        const bounded=T.MathUtils.lerp(Math.min(angle,.65),softBound,c.runTracking||0);
         c.from.set(c.delta.x,c.delta.y,c.delta.z).divideScalar(Math.max(sin,1e-8));
         c.delta.identity();if(bounded>1e-8)c.delta.setFromAxisAngle(c.from,bounded);
         end.quaternion.copy(c.neutralFoot).multiply(c.delta);
@@ -299,8 +304,9 @@
       // Filter gait inputs, then track the contact curve promptly; otherwise
       // heel recovery arrives late and a running leg never finishes its swing.
       const groundResponse=this.move*(1-this.air);
-      const blend = 1 - Math.exp(-(22+58*groundResponse) * dt);
-      const jointRate=7.5+10.5*groundResponse;
+      const runTracking=c.runTracking||0;
+      const blend = T.MathUtils.lerp(1 - Math.exp(-(22+58*groundResponse) * dt),1,runTracking);
+      const jointRate=7.5+10.5*groundResponse+12*runTracking;
       for (let i = 0; i < 3; i++) {
         const distance=c.previous[i].angleTo(c.nodes[i].quaternion);
         c.previous[i].rotateTowards(c.nodes[i].quaternion,Math.min(distance*blend,jointRate*dt));

@@ -1,4 +1,4 @@
-/* Authored locomotion, contact transitions and reactive flight.
+/* Authored walking, baked athletic running, and reactive flight.
  * Fitted suit coordinates: +Y up, +Z forward, 0.45 metres/unit.
  * Physics stays in the game; the rig adapter owns skin helpers and limits. */
 (function(g){
@@ -24,7 +24,7 @@
       this.v=new T.Vector3();this.j=new T.Vector3();this.upperDir=new T.Vector3();this.lowerDir=new T.Vector3();this.knee=new T.Vector3();
       this.rawTarget=new T.Vector3();this.rawPole=new T.Vector3();
       this.bodyDelta=new T.Quaternion();this.bodyInverse=new T.Quaternion();this.poseQ=new T.Quaternion();this.tempQ=new T.Quaternion();
-      this.worldQ=new T.Quaternion();this.parentQ=new T.Quaternion();this.walkFrames={};this.runFrames={};
+      this.worldQ=new T.Quaternion();this.parentQ=new T.Quaternion();this.walkFrames={};
       frame.updateWorldMatrix(true,true);frame.getWorldQuaternion(this.worldQ).invert();
       this.torso=this.groundTorso.concat(this.headJoints).map(t=>{
         const n=t.bone.name,source=/Spine_1/.test(n)?'Spine':/Spine_2/.test(n)?'Spine1':/Spine_3/.test(n)?'Spine2':/^neck/i.test(n)?'Neck':'Head';
@@ -43,6 +43,9 @@
         c.lengthA=c.points[0].distanceTo(c.points[1]);c.lengthB=c.points[1].distanceTo(c.points[2]);
         c.filtered=c.points[2].clone();c.targetVelocity=new T.Vector3();c.filteredPole=c.points[1].clone();c.origin=new T.Vector3();
       });
+      this.running=new g.GodmanRunningGait(frame,this.chains);
+      this.transitionPrevious=this.chains.flatMap(c=>c.nodes.map(n=>n.quaternion.clone()));
+      this.transitionStep=0;
       this.gaitSpeed=this.ready=this.headExtension=this.contactOffset=0;
       this.soleFloor=-.62;this.cacheSoles();
     }
@@ -82,23 +85,33 @@
       for(let i=0;i<count;i++)this.advance(total/count,s);
     }
     sampleDirections(c){
-      const key=c.side+'_'+c.type,w=this.walkFrames,r=this.runFrames;
+      const key=c.side+'_'+c.type,w=this.walkFrames;
       for(let i=0;i<3;i++){
-        this.upperDir.setComponent(i,T.MathUtils.lerp(value(w,key,i),value(r,key,i),this.run));
-        this.lowerDir.setComponent(i,T.MathUtils.lerp(value(w,key,i+3),value(r,key,i+3),this.run));
+        this.upperDir.setComponent(i,value(w,key,i));
+        this.lowerDir.setComponent(i,value(w,key,i+3));
       }
       this.upperDir.normalize().applyQuaternion(this.bodyInverse);this.lowerDir.normalize().applyQuaternion(this.bodyInverse);
       this.knee.copy(c.origin).addScaledVector(this.upperDir,c.lengthA);
       this.v.copy(this.knee).addScaledVector(this.lowerDir,c.lengthB);
     }
     sampleRotation(key){
-      const w=this.walkFrames,r=this.runFrames;
+      const w=this.walkFrames;
       this.poseQ.fromArray(w.a.torso[key]).slerp(this.tempQ.fromArray(w.b.torso[key]),w.u);
-      this.q.fromArray(r.a.torso[key]).slerp(this.tempQ.fromArray(r.b.torso[key]),r.u);
-      this.poseQ.slerp(this.q,this.run);
+    }
+    applyRun(weight,s){
+      this.running.apply(this.phase,weight,s.laser,weight<1?this.transitionPrevious:null,this.transitionStep);
+      this.bodyDelta.copy(FACING).invert().multiply(this.frame.quaternion);
+      this.bodyInverse.copy(this.bodyDelta).invert();
+      for(const c of this.chains){
+        this.frame.worldToLocal(c.nodes[0].getWorldPosition(c.origin));
+        this.frame.worldToLocal(c.nodes[1].getWorldPosition(c.pole));
+        this.frame.worldToLocal(c.nodes[2].getWorldPosition(c.goal));
+      }
     }
     advance(h,s){
       this.time+=h;
+      const previousGround=this.move*(1-this.air);
+      let joint=0;for(const c of this.chains)for(const n of c.nodes)this.transitionPrevious[joint++].copy(n.quaternion);
       // Idle formerly kept moving Center/Hip and clavicles underneath the
       // controller. Own every structural ancestor, not just the limb joints.
       for(const b of this.bodyAnchors){b.bone.quaternion.copy(b.q);b.bone.position.copy(b.p);b.bone.scale.copy(b.s);}
@@ -111,16 +124,21 @@
       this.gaitSpeed=damp(this.gaitSpeed,s.grounded&&!s.water?s.speed||0:0,10,h);
       this.move=damp(this.move,s.grounded&&!s.water?clamp(this.gaitSpeed/.8,0,1)*(1-this.crouch):0,12,h);
       this.run=damp(this.run,clamp((this.gaitSpeed-2)/2.4,0,1),8,h);
-      const walk=g.GodmanWalkMotion||g.GodmanRunMotion,run=g.GodmanRunMotion||walk;
-      const cadence=T.MathUtils.lerp(1.10,1.60,this.run);
+      const walk=g.GodmanWalkMotion;
+      const cadence=T.MathUtils.lerp(1.10,this.running.cadence,this.run);
       this.phase=(this.phase+h*cadence*clamp(this.gaitSpeed/1.1,0,1))%1;
-      const authored=frames(walk,this.phase,this.walkFrames)&&frames(run,this.phase,this.runFrames);
+      const authored=frames(walk,this.phase,this.walkFrames);
       const ground=(1-this.air)*(1-this.water),locomotion=this.move*ground;
+      this.transitionStep=(7.5+22.5*Math.max(previousGround,this.move*(1-this.air)))*h;
       const powered=Math.max(this.power,this.brake),free=this.air*(1-powered)*(1-this.water);
       const earthAir=free*(1-(s.space||0)),coast=free*(s.space||0);
       const tuck=earthAir*smooth(.10,.30,s.airTime||0)*(1-smooth(.45,.85,s.airTime||0));
       const impactTime=!s.grounded&&s.verticalSpeed<-.5&&Number.isFinite(s.height)?Math.max(0,s.height)/-s.verticalSpeed:Infinity;
       this.ready=damp(this.ready,(1-smooth(.08,.38,impactTime))*earthAir,10,h);
+      const runWeight=this.run*locomotion;
+      if(runWeight>.999&&!s.laser){
+        this.applyRun(1,s);return;
+      }
       this.bodyDelta.identity();
       if(authored&&locomotion>.001){this.sampleRotation('Hips');this.bodyDelta.slerp(this.poseQ,locomotion);}
       this.frame.quaternion.copy(FACING).multiply(this.bodyDelta);
@@ -130,9 +148,8 @@
       const pivotY=this.legs[0].points[0].y;
       this.frame.position.set(0,-this.crouch*.36+pivotY-this.v.y,this.crouch*.42);
       if(authored&&locomotion>.001&&this.walkFrames.a.pelvisHeight!==undefined){
-        // One source floor for the whole clip preserves the run's flight phase.
-        const height=T.MathUtils.lerp(scalar(this.walkFrames,'pelvisHeight'),scalar(this.runFrames,'pelvisHeight'),this.run)*this.legReach;
-        this.frame.position.y=T.MathUtils.lerp(this.frame.position.y,this.floor+height-this.v.y,locomotion);
+        const walkY=this.floor+scalar(this.walkFrames,'pelvisHeight')*this.legReach-this.v.y;
+        this.frame.position.y=T.MathUtils.lerp(this.frame.position.y,walkY,locomotion);
       }
       this.frame.position.y-=this.ready*.055;
       this.frame.updateWorldMatrix(true,true);this.frame.getWorldQuaternion(this.worldQ);
@@ -180,9 +197,9 @@
           this.sampleDirections(c);
           c.goal.lerp(this.v,locomotion);c.pole.lerp(this.knee,locomotion);
           if(c.type==='leg'){
-            const key=c.side+'_footForward',w=this.walkFrames,r=this.runFrames;
-            if(w.a[key]&&r.a[key]){
-              this.v.set(T.MathUtils.lerp(value(w,key,0),value(r,key,0),this.run),T.MathUtils.lerp(value(w,key,1),value(r,key,1),this.run),T.MathUtils.lerp(value(w,key,2),value(r,key,2),this.run)).normalize();
+            const key=c.side+'_footForward',w=this.walkFrames;
+            if(w.a[key]){
+              this.v.set(value(w,key,0),value(w,key,1),value(w,key,2)).normalize();
               endPitch=clamp(Math.atan2(-this.v.y,Math.hypot(this.v.x,this.v.z)),-.55,.65)*locomotion;
             }
           }
@@ -194,12 +211,12 @@
           c.goal.lerp(this.v,this.water);c.footPlant*=1-this.water;
         }
         if(s.laser&&c.side==='R'&&c.type==='arm')c.goal.set(Math.max(.95,origin.x+.25),origin.y-.25,origin.z+1.3);
-        if(c.type==='arm'&&c.goal.y>1.15&&c.goal.y<2.65){
+        if(c.type==='arm'&&c.goal.y>1.15&&c.goal.y<2.65&&this.run*locomotion<.999){
           // A lateral thrust request must not pull the glove through the suit.
           // Allow hands toward the midline only once they are in front of it.
           const z=(c.goal.z-.04)/.77;
           const clearance=.14+.78*Math.sqrt(Math.max(0,1-z*z));
-          if(Math.abs(z)<1&&c.sign*c.goal.x<clearance&&authored&&locomotion>.1&&c.goal.y<origin.y-.03){
+          if(Math.abs(z)<1.32&&c.sign*c.goal.x<clearance&&authored&&locomotion>.1&&c.goal.y<origin.y-.03){
             // Make room for the pressure suit by abducting the entire arm
             // around its shoulder. Pushing only the wrist outward changes
             // elbow flexion and destroys the source arm swing.
@@ -207,23 +224,27 @@
             const dx=c.sign*this.v.x,dy=this.v.y,radius=Math.hypot(dx,dy);
             const target=clearance-c.sign*origin.x;
             const angle=clamp(-Math.acos(clamp(target/Math.max(radius,.001),-1,1))-Math.atan2(dy,dx),0,.60);
-            this.q.setFromAxisAngle(this.j.set(0,0,1),c.sign*angle);
+            // Begin outside the contact envelope and ease into full clearance.
+            // Switching on at its rim snapped the shoulder by ~0.6 radians
+            // each run cycle and forced the wrist to chase a new roll target.
+            const approach=1-smooth(1,1.32,Math.abs(z));
+            this.q.setFromAxisAngle(this.j.set(0,0,1),c.sign*angle*approach*(1-this.run*locomotion));
             c.goal.copy(this.v.applyQuaternion(this.q)).add(origin);
             c.pole.sub(origin).applyQuaternion(this.q).add(origin);
-          }else if(Math.abs(z)<1&&c.sign*c.goal.x<clearance)c.goal.x=c.sign*clearance;
+          }else if(Math.abs(z)<1&&c.sign*c.goal.x<clearance)c.goal.x=T.MathUtils.lerp(c.goal.x,c.sign*clearance,1-this.run*locomotion);
         }
         if(c.type==='arm'&&authored&&locomotion>.1&&c.goal.y<origin.y-.1&&c.goal.y>1.15&&c.goal.y<2.65&&c.goal.z>.55){
           // At the front rim, glove fingers extend behind the wrist. Measured
-          // skin contact here was only ~1.8mm; more sideways abduction moved
-          // crossed fingers toward the torso. Add at most 1.15 degrees of
-          // forward shoulder clearance, rotating elbow and hand together.
-          const needed=.04+.77*Math.sqrt(Math.max(0,1-(c.goal.x/.92)**2));
+          // skin contact here was only a few millimetres; more sideways
+          // abduction moved crossed fingers toward the torso. Add at most
+          // 2.3 degrees of forward clearance, rotating elbow and hand together.
+          const needed=.05+.78*Math.sqrt(Math.max(0,1-(c.goal.x/.92)**2));
           if(c.goal.z<needed){
             this.v.copy(c.goal).sub(origin);
             const radius=Math.hypot(this.v.y,this.v.z),ratio=(needed-origin.z)/Math.max(radius,.001);
             if(ratio<1){
-              const angle=clamp(Math.PI-Math.asin(clamp(ratio,-1,1))-Math.atan2(this.v.z,this.v.y),-.02,0);
-              this.q.setFromAxisAngle(X,angle);
+              const angle=clamp(Math.PI-Math.asin(clamp(ratio,-1,1))-Math.atan2(this.v.z,this.v.y),-.04,0);
+              this.q.setFromAxisAngle(X,angle*(1-this.run*locomotion));
               c.goal.copy(this.v.applyQuaternion(this.q)).add(origin);
               c.pole.sub(origin).applyQuaternion(this.q).add(origin);
             }
@@ -243,27 +264,27 @@
           c.filteredPole.lerp(this.rawPole,1-Math.exp(-24*h));
           c.pole.copy(c.filteredPole).lerp(this.rawPole,direct);c.filteredPole.copy(c.pole);
         }
+        c.runTracking=0;
         this.solve(c,h,endPitch);
       }
       if(authored&&s.grounded&&locomotion>.05&&this.legs.every(c=>c.soleSamples&&c.soleSamples.length)){
-        const w=this.walkFrames,r=this.runFrames;
+        const w=this.walkFrames;
         let sourceClearance=Infinity,lowest=Infinity;
         this.frame.updateWorldMatrix(true,true);
         for(const c of this.legs){
-          const clear=T.MathUtils.lerp(T.MathUtils.lerp(w.a.footClearance[c.side],w.b.footClearance[c.side],w.u),T.MathUtils.lerp(r.a.footClearance[c.side],r.b.footClearance[c.side],r.u),this.run);
+          const clear=T.MathUtils.lerp(w.a.footClearance[c.side],w.b.footClearance[c.side],w.u);
           sourceClearance=Math.min(sourceClearance,clear);
           for(const point of c.soleSamples){c.nodes[2].localToWorld(this.v.copy(point));this.frame.parent.worldToLocal(this.v);lowest=Math.min(lowest,this.v.y);}
         }
         const contact=1-smooth(.015,.09,sourceClearance);
         const desired=clamp(this.soleFloor-lowest,-.22,.12)*contact*locomotion;
         this.contactOffset=damp(this.contactOffset,desired,30,h);
-        // Hard non-penetration remains valid even during a source flight
-        // phase; different boot proportions must never enter the floor.
         this.frame.position.y+=Math.max(this.contactOffset,this.soleFloor-lowest);
         this.frame.updateWorldMatrix(true,true);
       }else this.contactOffset=damp(this.contactOffset,0,15,h);
+      if(runWeight>.001)this.applyRun(runWeight,s);
     }
   }
   g.GodmanMotionSettings=Object.freeze({walkSpeed:1.8,runSpeed:4.4});
-  g.GodmanCharacterMotion=BodyController;g.GODMAN_MOTION_BUILD='20261102.5';
+  g.GodmanCharacterMotion=BodyController;g.GODMAN_MOTION_BUILD='20261103.1';
 })(typeof window==='undefined'?globalThis:window);
