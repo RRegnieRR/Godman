@@ -58,15 +58,22 @@
       this.headJoints = [];
       this.groundTorso=[];
       const allBones=[];frame.traverse(b=>{if(b.isBone)allBones.push(b);});
-      this.runningFingers=allBones.filter(b=>/^[LR]_(thumb|index|middle|ring|pinky)_[123][._]/i.test(b.name)).map(b=>{
+      // GLTFLoader sanitizes periods out of names: L_index_1.16 becomes
+      // L_index_116. Accept both raw GLB and runtime names.
+      this.runningFingers=allBones.filter(b=>/^[LR]_(thumb|index|middle|ring|pinky)_[123](?:[._]|\d)/i.test(b.name)).map(b=>{
         const match=b.name.match(/_(thumb|index|middle|ring|pinky)_([123])/i);
         const rest=(b.userData.motionBindQuaternion||b.quaternion).clone();
-        const amount=match[1].toLowerCase()==='thumb'?[.10,.22,.16][Number(match[2])-1]:[.48,.68,.32][Number(match[2])-1];
-        return {bone:b,rest,target:rest.clone().multiply(new T.Quaternion().setFromAxisAngle(new T.Vector3(0,0,1),-amount)),active:false};
+        const thumb=match[1].toLowerCase()==='thumb',joint=Number(match[2]);
+        const target=rest.clone();
+        // Thumb opposition is a different axis from finger flexion. Curling
+        // it like an index finger left it sticking away from the running fist.
+        if(thumb&&joint===1)target.multiply(new T.Quaternion().setFromAxisAngle(new T.Vector3(0,1,0),b.name.startsWith('L')?.4:-.4));
+        target.multiply(new T.Quaternion().setFromAxisAngle(new T.Vector3(0,0,1),thumb?-.10:-[.95,1.15,.55][joint-1]));
+        return {bone:b,rest,target,active:false};
       });
       frame.updateWorldMatrix(true, true);
       frame.traverse(b => {
-        if(b.isBone&&/^Spine_[123][._]/i.test(b.name))this.groundTorso.push({bone:b,rest:b.quaternion.clone()});
+        if(b.isBone&&/^Spine_[123](?:[._]|\d)/i.test(b.name))this.groundTorso.push({bone:b,rest:b.quaternion.clone()});
         if (b.isBone && /^(neck|head)[._0-9]/i.test(b.name)) {
           const axis = X.clone().applyQuaternion(frame.getWorldQuaternion(new T.Quaternion()))
             .applyQuaternion(b.parent.getWorldQuaternion(new T.Quaternion()).invert());
@@ -90,11 +97,15 @@
           const upperInFrame=frame.getWorldQuaternion(new T.Quaternion()).invert().multiply(nodes[0].getWorldQuaternion(new T.Quaternion()));
           const upperBindOffset=new T.Quaternion().setFromRotationMatrix(bindBasis).invert().multiply(upperInFrame);
           const kneeSupport=type==='leg'?allBones.find(b=>b.name.startsWith(side+'_Knee_spo')):null;
+          const segments=type==='arm'?allBones.filter(b=>b.name.startsWith(side+'_Arm_')||b.name.startsWith(side+'_Elbow_')).filter(b=>/_segment/.test(b.name)).map(b=>({
+            bone:b,rest:(b.userData.motionBindQuaternion||b.quaternion).clone(),position:b.position.clone(),scale:b.scale.clone(),
+            forearm:b.name.startsWith(side+'_Elbow_'),index:Number(b.name.match(/_(\d)_segment/)[1])
+          })):[];
           const toes=type==='leg'?allBones.filter(b=>b.name.startsWith(side+'_Toe')).map(b=>({bone:b,q:b.quaternion.clone(),p:b.position.clone(),s:b.scale.clone()})):[];
           const neutralFoot=(nodes[2].userData.motionBindQuaternion||nodes[2].quaternion).clone();
           if(type==='leg'){neutralFoot.x=0;neutralFoot.y=0;neutralFoot.normalize();}
           this.chains.push({type, side, sign: Math.sign(points[0].x) || (side === 'L' ? 1 : -1),
-            kneeSupport,supportRest:kneeSupport?kneeSupport.quaternion.clone():null,
+            segments,kneeSupport,supportRest:kneeSupport?kneeSupport.quaternion.clone():null,
             supportPosition:kneeSupport?kneeSupport.position.clone():null,supportScale:kneeSupport?kneeSupport.scale.clone():null,toes,neutralFoot,
             positions:nodes.map(n=>n.position.clone()),scales:nodes.map(n=>n.scale.clone()),
             upperBindOffset,basis:new T.Matrix4(),normal:new T.Vector3(),basisY:new T.Vector3(),footPlant:1,
@@ -120,6 +131,9 @@
     orient(dt, base, up, thrust, velocity, grounded, water, space=0) {
       dt=Math.min(dt,.05);
       this.attitudeTarget.copy(base);
+      // Ground/water frames must not reuse the previous frame's body-up scratch
+      // as if it were a newly requested thrust vector.
+      this.force.copy(up);
       const drifting=!grounded&&!water&&space>.6&&Math.max(this.power,this.brake)<.015;
       if (!grounded && !water) {
         this.force.copy(thrust);
@@ -190,10 +204,10 @@
         bone.quaternion.copy(c.parentQ).multiply(c.delta).multiply(c.worldQ);
         bone.updateWorldMatrix(false, true);
       };
-      if(c.type==='leg'){
-        // Match the *entire* thigh frame, including its kneecap direction.
-        // A shortest-arc position solve leaves axial roll unconstrained and
-        // turns the skinned knee sideways even when joint positions look valid.
+      {
+        // Match the full upper-limb frame, including the hinge axis. Merely
+        // pointing the upper arm at the elbow leaves its axial twist free;
+        // the elbow skin then rotates sideways as the shoulder swings.
         c.from.subVectors(c.mid,c.a).normalize();
         c.to.subVectors(c.target,c.mid).normalize();
         c.normal.crossVectors(c.from,c.to).normalize();
@@ -203,7 +217,7 @@
         upper.parent.getWorldQuaternion(c.parentQ).invert();
         upper.quaternion.copy(c.parentQ).multiply(c.worldQ);
         upper.updateWorldMatrix(false,true);
-      }else aim(upper, c.b, c.mid, c.a);
+      }
       lower.getWorldPosition(c.b); end.getWorldPosition(c.c);
       aim(lower, c.c, c.target, c.b);
       if(c.type==='arm'){
@@ -245,13 +259,16 @@
         c.delta.identity();if(bounded>1e-8)c.delta.setFromAxisAngle(c.from,bounded);
         end.quaternion.copy(c.neutralFoot).multiply(c.delta);
       }
-      if(c.type==='arm'&&this.power+this.brake>.001){
-        const weight=Math.max(this.power,this.brake);
+      const runningHand=this.move*this.run*(1-this.air)*(1-this.water);
+      if(c.type==='arm'&&this.power+this.brake+runningHand>.001){
+        const flightWeight=Math.max(this.power,this.brake);
+        const weight=Math.max(flightWeight,runningHand);
         end.updateWorldMatrix(true,false);
         end.getWorldQuaternion(c.worldQ);
         c.from.set(0,-1,0).applyQuaternion(c.worldQ).normalize();
         this.frame.getWorldQuaternion(c.worldQ);
-        if(this.exhaust)c.to.copy(this.exhaust).applyQuaternion(c.worldQ);
+        if(runningHand>flightWeight)c.to.set(-c.sign,0,0).applyQuaternion(c.worldQ);
+        else if(this.exhaust)c.to.copy(this.exhaust).applyQuaternion(c.worldQ);
         else c.to.set(this.flightLoad.x*.35,-1,this.flightLoad.z*.35).normalize().applyQuaternion(c.worldQ);
         lower.getWorldPosition(c.b);end.getWorldPosition(c.c);
         c.axis.subVectors(c.c,c.b).normalize();
@@ -259,16 +276,21 @@
         c.target.copy(c.to).projectOnPlane(c.axis).normalize();
         // Forearm pronation/supination aligns the palm first, with no change
         // to elbow position. The wrist supplies only the remaining small bend.
-        const roll=clamp(Math.atan2(c.mid.crossVectors(c.bend,c.target).dot(c.axis),c.bend.dot(c.target)),-1.15,1.15)*weight;
+        const roll=clamp(Math.atan2(c.mid.crossVectors(c.bend,c.target).dot(c.axis),c.bend.dot(c.target)),-1.4,1.4)*weight;
         c.delta.setFromAxisAngle(c.axis,roll);
-        lower.getWorldQuaternion(c.worldQ);lower.parent.getWorldQuaternion(c.parentQ).invert();
-        lower.quaternion.copy(c.parentQ).multiply(c.delta).multiply(c.worldQ);
-        lower.updateWorldMatrix(false,true);
+        // In this GLB Elbow is a pure hinge. Pronation belongs on Wrist and
+        // the forearm deformation chain, not a twist of the entire elbow.
+        // Source clips put ~1/3 of Wrist's axial twist on each of segments 2–4.
+        end.getWorldQuaternion(c.worldQ);end.parent.getWorldQuaternion(c.parentQ).invert();
+        end.quaternion.copy(c.parentQ).multiply(c.delta).multiply(c.worldQ);
+        end.updateWorldMatrix(false,true);
         end.getWorldQuaternion(c.worldQ);
         c.from.set(0,-1,0).applyQuaternion(c.worldQ).normalize();
         c.delta.setFromUnitVectors(c.from,c.to);
         const angle=c.delta.angleTo(this.attitudeIdentity);
-        c.delta.slerp(this.attitudeIdentity,1-Math.min(1,.65/Math.max(angle,1e-6))*weight);
+        // Running uses forearm rotation, keeping the wrist straight. Powered
+        // flight may additionally flex the wrist within its aiming envelope.
+        c.delta.slerp(this.attitudeIdentity,1-Math.min(1,.65/Math.max(angle,1e-6))*flightWeight);
         end.parent.getWorldQuaternion(c.parentQ).invert();
         end.quaternion.copy(c.parentQ).multiply(c.delta).multiply(c.worldQ);
       }
@@ -292,6 +314,21 @@
         c.delta.slerp(this.attitudeIdentity,.5);
         c.kneeSupport.quaternion.copy(c.supportRest).multiply(c.delta);
         c.kneeSupport.position.copy(c.supportPosition);c.kneeSupport.scale.copy(c.supportScale);
+      }
+      if(c.type==='arm'){
+        // The idle mixer animates these helpers independently. They skin most
+        // of the sleeves, so letting idle keep ownership visibly corkscrews
+        // the suit even when the three main joint positions are correct.
+        let wristTwist=2*Math.atan2(end.quaternion.x,end.quaternion.w);
+        wristTwist=T.MathUtils.euclideanModulo(wristTwist+Math.PI,2*Math.PI)-Math.PI;
+        for(const segment of c.segments){
+          segment.bone.quaternion.copy(segment.rest);
+          if(segment.forearm&&segment.index>=2&&segment.index<=4){
+            c.delta.setFromAxisAngle(X,wristTwist/3);
+            segment.bone.quaternion.multiply(c.delta);
+          }
+          segment.bone.position.copy(segment.position);segment.bone.scale.copy(segment.scale);
+        }
       }
       upper.updateWorldMatrix(false, true);
     }

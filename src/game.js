@@ -2692,10 +2692,10 @@
   });
 
   const PLAYER_FEET = 0.3;
-  // Human-scale ground locomotion. 1.8 m/s is a purposeful walk; 6.2 m/s is
-  // a sustainable athletic run rather than the previous superhuman 30 m/s.
-  const WALK_SPEED = 1.8;
-  const RUN_SPEED = 6.2;
+  // Ground speed matches the retargeted suit's stride. Shared with the studio
+  // so the preview and game do not show different foot-contact velocities.
+  const WALK_SPEED = (window.GodmanMotionSettings||{}).walkSpeed||1.8;
+  const RUN_SPEED = (window.GodmanMotionSettings||{}).runSpeed||4.4;
   const JUMP_MIN = 6;
   const JUMP_MAX = 12000;
   const CHARGE_TIME = 1.6;
@@ -5031,8 +5031,16 @@
       flightLocalDirection.copy(activeThrustDirection).applyQuaternion(flightInverse);
       characterMotion.orient(dt,player.quaternion,smoothUp,activeThrustDirection,vel,grounded,earthInWater,spacePoseBlend);
       player.scale.setScalar(PSCALE);
+      let animationHeight=grounded?0:Infinity;
+      if(!grounded&&!nearestP.deadly&&distSurf<500){
+        frameScratch.playerForward.copy(pos).sub(nearestP.center).normalize();
+        const animationSurface=surfaceR(nearestP,frameScratch.playerForward);
+        if(animationSurface>=0)animationHeight=Math.max(0,pos.distanceTo(nearestP.center)-animationSurface-PLAYER_FEET);
+      }
+      const animationVerticalSpeed=grounded?0:vel.dot(smoothUp)-(nearestP===airCarry?0:nearestP.velNow.dot(smoothUp));
       characterMotion.update(dt,{grounded,charge,landing:squash,speed:groundSpeedNow,
         airTime:airborneTime,space:spacePoseBlend,powered:thrusting,throttle:flightThrottle,brake:flightBrake,
+        height:animationHeight,verticalSpeed:animationVerticalSpeed,
         water:earthInWater,laser:laserEquipped,turn:flightLocalDirection.x});
     }
     updateAuthoredRepulsors(dt,thrusting&&!earthInWater);
