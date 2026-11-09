@@ -78,8 +78,8 @@
   <div class="panel" id="panelInfo">
     <h2>Info &amp; Controls</h2>
     <span class="key">W A S D</span> move · <span class="key">Shift</span> run · <span class="key">Mouse</span> look<br>
-    <span class="key">SPACE</span> on ground: hold to charge, release to jump toward the crosshair. Aim higher for a higher arc.<br>
-    The rounded meter has 16 stages over 5 seconds. The first is a human-height jump; each following stage doubles the height. Full charge can clear the atmosphere when aimed upward.<br>
+    <span class="key">SPACE</span> on ground: hold to charge, release to drive the arms down and ignite the palms and boots for a vertical launch. Hold again in the air to steer toward the crosshair.<br>
+    The rounded meter has 16 stages over 5 seconds. Each stage stores more launch energy. Full charge can clear the atmosphere when aimed upward.<br>
     <span class="key">SPACE</span> in the air: thrust toward the crosshair · aim up to climb, down to descend<br>
     The shoulder flashlight automatically lights the path ahead in darkness and follows your view.<br>
     <span class="key">C</span> overview camera — zoom far out, orbit with the mouse, C again to return<br>
@@ -88,7 +88,7 @@
     <span class="key">T</span> lock onto the planet you are looking at — the camera tracks it and high-speed approaches brake for landing<br>
     <span class="key">Left-click</span> call an asteroid strike — it leaves a realistic impact crater (a rock can't punch through a world)<br>
     <span class="key">L</span> pull up the orbital laser, then hold <span class="key">Left-click</span> — sustained fire melts a collision-matched basin into the surface<br>
-    <span class="key">Shift</span> run on the ground · air-brake in flight<br>
+    <span class="key">Shift</span> run on the ground · hold in flight to brake and maintain altitude. Release to coast<br>
     <span class="key">M</span> instant boost to 39,937.7 km/h — Apollo 10, the fastest humans have ever travelled<br>
     <span class="key">R</span> respawn on Earth · <span class="key">Esc</span> open this menu<br><br>
     A real-proportion universe at 1:10 scale: true planet sizes, true orbital
@@ -111,14 +111,16 @@
 <script src="src/runtime/physical-lighting.js?v=20261103.10" defer></script>
 <script src="src/runtime/planetary-sky.js?v=20261103.5" defer></script>
 <script src="src/runtime/deep-sky.js?v=20260903.25" defer></script>
-<script src="src/runtime/character-motion.js?v=20261103.14" defer></script>
+<script src="src/runtime/launch-sequence.js?v=20261104.31.2" defer></script>
+<script src="src/runtime/character-motion.js?v=20261104.31.2" defer></script>
 <script src="src/data/athletic-run.js?v=20261103.2" defer></script>
 <script src="src/runtime/running-gait.js?v=20261103.2" defer></script>
 <script src="src/data/walk-motion.js?v=20261102.5" defer></script>
-<script src="src/runtime/character-controller.js?v=20261103.14" defer></script>
-<script src="src/runtime/flight-dynamics.js?v=20261103.14" defer></script>
+<script src="src/runtime/character-controller.js?v=20261104.31.2" defer></script>
+<script src="src/runtime/propulsor-rig.js?v=20261104.31.2" defer></script>
+<script src="src/runtime/flight-dynamics.js?v=20261104.31.2" defer></script>
 <script src="src/runtime/terrain-surface.js?v=20261103.8" defer></script>
 <script src="src/runtime/shoulder-flashlight.js?v=20261103.10" defer></script>
-<script src="src/game.js?v=20261103.14" defer></script>
+<script src="src/game.js?v=20261104.31.2" defer></script>
 </body>
 </html>

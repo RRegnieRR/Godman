@@ -2535,6 +2535,8 @@
   const repulsorAverage=new THREE.Vector3(),repulsorFrame=new THREE.Quaternion();
   const repulsorLight=new THREE.PointLight(0x65bfff,0,8,2);
   scene.add(repulsorLight);
+  const launchPressure=window.GodmanLaunchPressure();scene.add(launchPressure);
+  const launchPressureLocal=new THREE.Vector3();let launchPressurePlanet=null;
 
   function createAuthoredRepulsor(bone,type,side){
     if(!bone)return;
@@ -2544,16 +2546,26 @@
     const nozzle=new THREE.Mesh(new THREE.SphereGeometry(type==='hand'?.031:.044,12,8),
       new THREE.MeshBasicMaterial({color:0xd8efff,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));
     nozzle.scale.y=.28;
-    fx.add(plume,nozzle);
-    authoredRepulsors.push({locator,fx,plume,nozzle,type});
+    const flash=window.GodmanPropulsorFlash();
+    fx.add(plume,nozzle);if(flash)fx.add(flash);
+    authoredRepulsors.push({locator,fx,plume,nozzle,flash,type});
   }
 
   function updateAuthoredRepulsors(dt,active){
+    const pressureAge=flightDynamics.launchAge-flightDynamics.launchDelay;
+    launchPressure.updateBurst(pressureAge,.3+.7*flightDynamics.launchCharge);
+    if(launchPressure.visible&&launchPressurePlanet){
+      launchPressure.position.copy(launchPressureLocal).applyQuaternion(launchPressurePlanet.mesh.quaternion).add(launchPressurePlanet.center).sub(pos);
+      repulsorDirection.copy(launchPressureLocal).normalize().applyQuaternion(launchPressurePlanet.mesh.quaternion);
+      launchPressure.quaternion.setFromUnitVectors(frameScratch.localUp,repulsorDirection);
+    }
     const braking=!grounded&&!earthInWater?flightBrake:0;
     repulsorBlend=damp(repulsorBlend,active?flightThrottle:braking*.65,active?8:12,dt);
     if(!authoredRepulsors.length)return;
     // Once the exhaust has faded, its hidden locators need no bone traversal.
-    if(repulsorBlend<=.01){
+    const chargingBoots=grounded&&!earthInWater?(charging?charge:flightDynamics.launchQueued?flightDynamics.launchCharge:0):0;
+    const ignition=flightDynamics.launchFlash;
+    if(repulsorBlend<=.01&&flightDynamics.steeringThrottle<=.01&&chargingBoots<.005&&ignition<.01){
       for(const r of authoredRepulsors)r.fx.visible=false;
       repulsorLight.intensity=0;return;
     }
@@ -2571,17 +2583,25 @@
       const chain=characterMotion&&characterMotion.chains.find(c=>c.nodes[2]===r.locator.parent);
       const alignment=chain?window.GodmanRepulsorAim(authoredSuitRoot,r.locator.parent,r.locator.userData.exhaustAxis,chain.exhaust,repulsorDirection):1;
       r.fx.quaternion.setFromUnitVectors(repulsorAxis,repulsorDirection);
-      const strength=repulsorBlend*(characterMotion?characterMotion.nozzleShare(r.type,side):1)*alignment;
-      r.fx.visible=strength>.012;
+      const boot=r.type==='foot',pilot=boot?chargingBoots*.18:0;
+      const burst=ignition*(boot?1:.65);
+      const port=flightDynamics.coordinated&&flightDynamics.rig.ports.find(p=>p.type===r.type&&p.side===side);
+      const handJet=!boot&&port?Math.min(.85,Math.sqrt(port.force.length()/8))*alignment:0;
+      const steeringGlow=flightDynamics.steeringThrottle*(boot?.7:1);
+      const strength=Math.max(pilot,burst*.45,handJet,boot&&flightDynamics.hoverLocked?.3:0,Math.max(repulsorBlend,steeringGlow)*(characterMotion?characterMotion.nozzleShare(r.type,side):1)*alignment);
+      r.fx.visible=strength>.012||burst>.01||chargingBoots>.05;
       r.fx.scale.setScalar(1);
-      r.plume.scale.set(1+spacePoseBlend*.22,.25+strength*.95,1+spacePoseBlend*.22);
+      const width=1+spacePoseBlend*.22+burst*1.7;
+      r.plume.scale.set(width,(pilot>repulsorBlend?.08+pilot*.3:.25+strength*.95)+burst*.6,width);
+      if(r.flash){r.flash.visible=pilot+burst+strength+chargingBoots>.01;r.flash.scale.setScalar(.6+burst*.8);r.flash.userData.material.uniforms.strength.value=pilot*1.5+chargingBoots*(boot?.2:.3)+burst*2.5+strength*.15;}
+      r.nozzle.scale.set(1+burst*2,.28,1+burst*2);
       r.plume.userData.material.uniforms.strength.value=strength;
       r.plume.userData.material.uniforms.time.value=elapsed;
-      r.nozzle.material.opacity=strength;
+      r.nozzle.material.opacity=Math.min(1,strength+burst);
       if(r.fx.visible){repulsorAverage.add(repulsorPosition);count++;}
     }
     if(count){repulsorLight.position.copy(repulsorAverage).multiplyScalar(1/count);}
-    repulsorLight.intensity=count?repulsorBlend*2.1:0;
+    repulsorLight.intensity=count?Math.min(22,repulsorBlend*2.1+chargingBoots*3+ignition*12):0;
   }
   function useAuthoredSuitAction(name,fade=.3,speed=1,delta=.016){
     const next=authoredSuitActions[name];
@@ -2739,6 +2759,7 @@
   let takeoffBlend = 0, landingImpact = 0, airborneTime = 0;
   let landingAge=99,landingStrength=0,swimBlend=0;
   const landingSlide=new THREE.Vector3();
+  const landingPose={from:new THREE.Quaternion(),travel:new THREE.Vector3(),age:99,strength:0,flare:0,roll:false,tuck:0};
   let flightThrottle=0,flightBrake=0;
   const flightDynamics=new window.GodmanFlightDynamics();
   let jumpGrace = 0;
@@ -2890,7 +2911,7 @@
     grounded = true;
     up.copy(n); smoothUp.copy(n);
     earthInWater=p===earth&&earthWaterAtWorld(n);
-    swimBlend=earthInWater?1:0;landingSlide.set(0,0,0);landingAge=99;landingStrength=0;
+    swimBlend=earthInWater?1:0;landingSlide.set(0,0,0);landingAge=99;landingStrength=0;landingPose.roll=false;
     if(p===earth&&earthSpawnFacing)fwdRef.copy(earthSpawnFacing).addScaledVector(n,-earthSpawnFacing.dot(n)).normalize();
     else fwdRef.set(0, 0, -1).addScaledVector(n, -n.dot(fwdRef)).normalize();
     if (fwdRef.lengthSq() < 1e-6) fwdRef.set(1, 0, 0);
@@ -2927,7 +2948,7 @@
       e.preventDefault();
       return;
     }
-    if (e.code === 'Space' && !e.repeat && grounded) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
+    if (e.code === 'Space' && !e.repeat && grounded&&!flightDynamics.launchQueued) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
     if (e.code === 'KeyR') spawnOn(homePlanet());
     if (e.code === 'KeyT' && !e.repeat) toggleTarget();
     if (e.code === 'KeyC' && !e.repeat) toggleOverview();
@@ -3851,11 +3872,14 @@
     const launchRadius=pos.distanceTo(groundPlanet.center);
     const launchGravity=groundPlanet.g*(groundPlanet.r/launchRadius)**2;
     const aim=camera.getWorldDirection(frameScratch.flightAim);
-    flightDynamics.jumpImpulse(aim,up,charge,launchGravity,launchRadius,vel).add(groundMotion);
-    groundMotion.set(0,0,0);
-    flightThrottle=0;flightBrake=0;flightDynamics.reset();
-    grounded = false;
-    jumpGrace = 0.25;
+    if(!flightDynamics.beginLaunch(charge,aim,up,launchGravity,launchRadius,fuel))return;
+    launchPressurePlanet=groundPlanet;
+    launchPressureLocal.copy(pos).addScaledVector(up,-PLAYER_FEET+.03).sub(groundPlanet.center);
+    launchPressureLocal.applyQuaternion(repulsorFrame.copy(groundPlanet.mesh.quaternion).invert());
+    vel.set(0,0,0);
+    groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;
+    // Remain planted while the arms strike down. The ignition marker releases contact.
+    jumpGrace = flightDynamics.launchDuration+.2;
     takeoffBlend = 1;
     airborneTime = 0;
   }
@@ -3990,11 +4014,16 @@
       ? Math.max(.05,Math.min(.34,impactSpeed/12))
       : THREE.MathUtils.clamp((impactSpeed-1.4)/7.2,.08,1);
     landingStrength=landingImpact;landingAge=0;
+    landingPose.from.copy(characterMotion?characterMotion.attitude:player.quaternion);
+    landingPose.travel.copy(relativeLandingVel).addScaledVector(n,-relativeLandingVel.dot(n));
     const tangentVelocity=landingSlide.copy(relativeLandingVel).addScaledVector(n,-relativeLandingVel.dot(n));
+    landingPose.roll=!!characterMotion&&!earthInWater&&!flightDynamics.hovering&&tangentVelocity.lengthSq()>12.25&&
+      Math.abs(frameScratch.playerForward.set(0,1,0).applyQuaternion(landingPose.from).dot(n))<.63;
+    if(landingPose.roll)lastFacing.copy(tangentVelocity).normalize();
     if(tangentVelocity.length()>18)tangentVelocity.setLength(18);
     groundMotion.copy(tangentVelocity);
     if(groundMotion.length()>RUN_SPEED)groundMotion.setLength(RUN_SPEED);
-    landingSlide.sub(groundMotion);
+    if(!landingPose.roll)landingSlide.sub(groundMotion);
     vel.set(0, 0, 0);
     groundMotion.set(0,0,0);flightThrottle=0;flightBrake=0;flightDynamics.reset();
     if(!contactPoint){
@@ -4634,9 +4663,14 @@
     const right = frameScratch.right.crossVectors(h, smoothUp).normalize();
     const mv = moveInput(h, right, frameScratch.move);
 
-    if (grounded && keys.Space && !charging) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
+    if (grounded && keys.Space && !charging&&!flightDynamics.launchQueued) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
     if (charging && grounded) charge=Math.min(1,(performance.now()-chargeStartedAt)/(CHARGE_TIME*1000));
 
+    if(grounded&&charging)mv.set(0,0,0);
+    if(grounded&&flightDynamics.launchQueued){
+      mv.set(0,0,0);
+      if(flightDynamics.prepareLaunch(dt)){grounded=false;vel.set(0,0,0);takeoffBlend=1;airborneTime=0;}
+    }
     let thrusting = false;
     groundSpeedNow = 0;
 
@@ -4648,7 +4682,8 @@
       const speed = earthInWater
         ? 4.4*(keys.ShiftLeft||keys.ShiftRight?1.45:1)*(charging?.55:1)
         : (keys.ShiftLeft||keys.ShiftRight?RUN_SPEED:WALK_SPEED)*(charging?.35:1);
-      const desiredGround=frameScratch.groundDesired.copy(mv).multiplyScalar(speed);
+      const rolling=landingPose.roll&&landingAge<.77;
+      const desiredGround=frameScratch.groundDesired.copy(mv).multiplyScalar(rolling?0:speed);
       const changingDirection=groundMotion.lengthSq()>.01&&desiredGround.lengthSq()>.01&&groundMotion.dot(desiredGround)<0;
       const response=desiredGround.lengthSq()>.01?(changingDirection?10.5:(earthInWater?2.8:5.8)):(earthInWater?3.6:7.5);
       groundMotion.lerp(desiredGround,1-Math.exp(-response*dt));
@@ -4662,7 +4697,7 @@
         const slideSpeed=landingSlide.length();
         // Coulomb-style surface friction removes a fixed amount of speed per
         // second, unlike exponential damping which made every landing snap.
-        const frictionAccel=Math.max(.8,groundPlanet.g*(earthInWater?1.3:.68));
+        const frictionAccel=Math.max(.8,groundPlanet.g*(rolling?1.35:earthInWater?1.3:.68));
         const nextSlideSpeed=Math.max(0,slideSpeed-frictionAccel*dt);
         if(nextSlideSpeed>0)landingSlide.multiplyScalar(nextSlideSpeed/slideSpeed);
         else landingSlide.set(0,0,0);
@@ -4703,8 +4738,9 @@
       const aim=frameScratch.flightAim.copy(h).multiplyScalar(Math.cos(pitch)).addScaledVector(smoothUp,-Math.sin(pitch)).normalize();
       if(overview)aim.copy(camDir);
       const surface=1-THREE.MathUtils.smoothstep(Math.max(0,distSurf),5000,20000);
+      if(flightDynamics.rig&&!flightDynamics.rig.initialized&&characterMotion)flightDynamics.rig.initialize(characterMotion.attitude,smoothUp);
       flightDynamics.update(dt,{velocity:vel,gravity:accel,up:smoothUp,move:mv,aim,
-        frameVelocity,surface,fuel,thrust:wantsThrust,braking,nearBlackhole});
+        frameVelocity,surface,fuel,heading:h,position:pos,center:nearestP.center,body:nearestP,thrust:wantsThrust,braking,nearBlackhole});
       activeThrustDirection.copy(flightDynamics.direction);
       flightThrottle=flightDynamics.throttle;flightBrake=flightDynamics.brake;
       thrusting=flightDynamics.powered;
@@ -5075,7 +5111,6 @@
     if(characterMotion){
       flightInverse.copy(player.quaternion).invert();
       flightLocalDirection.copy(activeThrustDirection).applyQuaternion(flightInverse);
-      characterMotion.orient(dt,player.quaternion,smoothUp,activeThrustDirection,vel,grounded,earthInWater,spacePoseBlend);
       player.scale.setScalar(PSCALE);
       let animationHeight=grounded?0:Infinity;
       if(!grounded&&!nearestP.deadly&&distSurf<500){
@@ -5084,7 +5119,23 @@
         if(animationSurface>=0)animationHeight=Math.max(0,pos.distanceTo(nearestP.center)-animationSurface-PLAYER_FEET);
       }
       const animationVerticalSpeed=grounded?0:vel.dot(smoothUp)-(nearestP===airCarry?0:nearestP.velNow.dot(smoothUp));
-      characterMotion.update(dt,{grounded,charge,landing:squash,speed:groundSpeedNow,
+      const timeToContact=animationVerticalSpeed<-.5?animationHeight/-animationVerticalSpeed:Infinity;
+      landingPose.age=landingAge;
+      landingPose.strength=landingStrength;
+      landingPose.flare=!grounded&&!earthInWater?1-THREE.MathUtils.smoothstep(timeToContact,.08,.85):0;
+      landingPose.tuck=0;
+      if(!grounded)landingPose.roll=false;
+      if(landingPose.flare>0){
+        landingPose.travel.copy(vel);
+        if(nearestP!==airCarry)landingPose.travel.sub(nearestP.velNow);
+        landingPose.travel.addScaledVector(smoothUp,-landingPose.travel.dot(smoothUp));
+        if(!flightDynamics.hovering&&landingPose.travel.lengthSq()>12.25&&Math.abs(flightDynamics.rig.bodyUp.dot(smoothUp))<.63){
+          landingPose.tuck=landingPose.flare;
+          landingPose.flare=0;
+        }
+      }
+      characterMotion.orient(dt,player.quaternion,smoothUp,activeThrustDirection,vel,grounded,earthInWater,spacePoseBlend,flightDynamics.coordinated?flightDynamics.rig:null,landingPose);
+      characterMotion.update(dt,{grounded,charge:0,launchCharge:charging?charge:flightDynamics.launchCharge,launchAge:charging?-1:flightDynamics.launchAge,rocketLaunch:flightDynamics.launchAge<.85,hoverHold:flightDynamics.hoverLocked,brakeReach:flightDynamics.brakeReach,brakeDirection:flightDynamics.brakeDirection,landingPose,landing:squash,speed:groundSpeedNow,
         airTime:airborneTime,space:spacePoseBlend,powered:thrusting,throttle:flightThrottle,brake:flightBrake,
         height:animationHeight,verticalSpeed:animationVerticalSpeed,
         water:earthInWater,laser:laserEquipped,turn:flightLocalDirection.x});
@@ -5311,10 +5362,11 @@
     hudPlanet.textContent = (grounded ? '' : '→ ') + altP.name;
     hudAlt.textContent = 'Altitude: ' + fmtDist(alt);
     const localMotion=grounded||distSurf<2e4;
+    const displayedFlightSpeed=localMotion?frameScratch.relativeVel.copy(vel).sub(nearestP===airCarry?frameScratch.flightFrameVelocity.set(0,0,0):nearestP.velNow).length():vel.length();
     hudSpeed.textContent='Speed: '+(grounded
       ? fmtLocalSpeed(groundSpeedNow+landingSlide.length())
-      : (localMotion?fmtLocalSpeed(vel.length()):fmtSpeed(vel.length())));
-    hudGrav.textContent = grounded ? '' : 'Gravity field: ' + domBody.name;
+      : (localMotion?fmtLocalSpeed(displayedFlightSpeed):fmtSpeed(displayedFlightSpeed)));
+    hudGrav.textContent = grounded ? '' : flightDynamics.hovering?(flightDynamics.hoverLocked?'HOVER · HOLD SHIFT':'BRAKING · HOLD SHIFT'):'Gravity field: ' + domBody.name;
     fuelBar.style.width = fuel.toFixed(1) + '%';
     if (target) {
       targetBanner.textContent = target.name.toUpperCase() + ' — ' +

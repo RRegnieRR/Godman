@@ -1,5 +1,6 @@
 'use strict';
 const assert=require('node:assert/strict'),T=global.THREE=require('../vendor/three.r128.min.js');
+require('../src/runtime/propulsor-rig.js');
 require('../src/runtime/flight-dynamics.js');
 const fs=require('node:fs'),vm=require('node:vm');
 const up=new T.Vector3(0,1,0),gravity=new T.Vector3(0,-9.81,0),aim=new T.Vector3(0,-.3,-1).normalize(),zero=new T.Vector3();
@@ -115,13 +116,15 @@ assert.ok(Math.abs(fullImpulse.length()-jump.jumpVelocity(1))<1e-7,'Full-charge 
 const game=fs.readFileSync(require.resolve('../src/game.js'),'utf8');
 const launchSource=game.slice(game.indexOf('  function doJump() {'),game.indexOf('  // M: the fastest speed',game.indexOf('  function doJump() {')));
 const viewed=new T.Vector3(.6,.8,0),walking=new T.Vector3(0,0,1);
-const actual={flightDynamics:new GodmanFlightDynamics(),charge:.5,pos:new T.Vector3(0,637100,0),groundPlanet:{g:9.81,r:637100,center:zero},up,groundMotion:walking.clone(),vel:new T.Vector3(),frameScratch:{flightAim:new T.Vector3()},camera:{getWorldDirection(out){return out.copy(viewed);}},grounded:true};
+const actual={flightDynamics:new GodmanFlightDynamics(),charge:.5,pos:new T.Vector3(0,637100,0),groundPlanet:{g:9.81,r:637100,center:zero},up,groundMotion:walking.clone(),vel:new T.Vector3(),frameScratch:{flightAim:new T.Vector3()},camera:{getWorldDirection(out){return out.copy(viewed);}},grounded:true,fuel:100,PLAYER_FEET:.28,launchPressureLocal:new T.Vector3(),launchPressurePlanet:null,repulsorFrame:new T.Quaternion()};
+actual.groundPlanet.mesh={quaternion:new T.Quaternion()};
 vm.createContext(actual);vm.runInContext(launchSource+'\ndoJump();',actual);
-assert.ok(actual.vel.clone().sub(walking).normalize().dot(viewed)>.99999,'Game jump ignored the viewed direction');
-assert.ok(!actual.grounded&&actual.groundMotion.lengthSq()===0,'Launch did not transfer ground momentum into flight');
+assert.ok(actual.flightDynamics.launchImpulse.clone().normalize().dot(up)>.999,'Cinematic ignition is not vertical');
+assert.equal(actual.vel.length(),0,'Pre-ignition arm drive moved the planted character');
+assert.ok(actual.grounded&&actual.flightDynamics.launchQueued&&actual.groundMotion.lengthSq()===0,'Pre-ignition release did not retain ground contact');
 actual.charge=0;actual.groundMotion.set(0,0,0);viewed.set(0,-.3,-1).normalize();actual.doJump();
-assert.ok(actual.vel.dot(up)>4.8,'Actual game tap jump still skims along the ground');
-assert.ok(actual.vel.z< -2,'Actual game tap jump lost its aimed forward travel');
+assert.ok(actual.flightDynamics.launchImpulse.dot(up)>4.8,'Rocket tap lacks surface clearance');
+assert.ok(Math.abs(actual.flightDynamics.launchImpulse.z)<1e-8,'Vertical launch retained an unintended forward kick');
 for(const [radius,g,top] of [[637100,9.81,10000],[6991100,24.79,18000],[5823200,10.44,25000],[173700,1.62,0]]){
  const speed=jump.jumpVelocity(1,g,radius),mu=g*radius*radius;
  const energy=speed*speed/2-mu/radius,apex=-mu/energy-radius;

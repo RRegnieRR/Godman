@@ -58,7 +58,7 @@ Physical visual references: [NASA: why Earth's sky is blue](https://spaceplace.n
 
 ## Character motion preview and regression checks
 
-Current local build: **20261103.14**. Running uses the original athletic reference, retargeted offline onto the actual suit in `src/data/athletic-run.js`. It preserves the reference's forward torso lean, variable elbow drive, high heel recovery, and running flight phase. Suit clearance and boot contact are prepared offline, then a periodic cubic player reads the final local bone poses and body trajectory. Established running has no live IK or root/contact feedback; only its entry and exit blends have joint rate limits. The walking, jump, and flight controllers remain separate. Ground speeds remain 1.8 m/s walking and 4.4 m/s running. Structural bones and skin helpers have one animation owner. Run `node tools/bake-athletic-run.cjs` to regenerate the baked clip from the bundled suit and reference direction data.
+Current build: **20261104.31.2**. Running uses the original athletic reference, retargeted offline onto the actual suit in `src/data/athletic-run.js`. It preserves the reference's forward torso lean, variable elbow drive, high heel recovery, and running flight phase. Suit clearance and boot contact are prepared offline, then a periodic cubic player reads the final local bone poses and body trajectory. Established running has no live IK or root/contact feedback; only its entry and exit blends have joint rate limits. The walking, jump, and flight controllers remain separate. Ground speeds remain 1.8 m/s walking and 4.4 m/s running. Structural bones and skin helpers have one animation owner. Run `node tools/bake-athletic-run.cjs` to regenerate the baked clip from the bundled suit and reference direction data.
 
 The studio includes walk/run/stop and flight-direction-reversal sequences. Continuous gaits do not reset to idle when the timeline ruler wraps. Controls can be hidden to inspect the full silhouette, and a link with `motion=run` opens directly into running. CPU checks compare running limb directions and torso lean with the athletic reference, require variable elbow drive and deep heel recovery, and verify stride repetition, joint continuity, helper ownership, sampled glove/boot surfaces, landing readiness, transitions, and frame-rate consistency. The studio remains a preview tool, not an animation editor.
 
@@ -82,11 +82,13 @@ Run `node tests/terrain-streaming.test.js`, `node tests/planetary-sky.test.js`, 
 
 ## Repulsor flight and charged jumps
 
-Build 20261103.8 makes airborne Space thrust directly toward the crosshair, including upward and downward aim. Gravity remains active. WASD does not add an unrelated airborne acceleration. Shift brakes relative to the current planetary frame. Hands and feet share the requested exhaust direction, with bounded wrist/ankle motion and nozzle gimbals. Emitters that cannot align fade; feet dominate upward thrust, hands dominate downward thrust, and the opposite hand drives sideways movement. Walking/running remain unchanged.
+Airborne Space thrusts toward the crosshair. The suit can climb upright, fly horizontally, and pitch into a dive. Hand and boot jet forces drive the turn using leverage from the posed limbs.
 
-Grounded Space charges 16 segments in a compact, rounded, text-free meter over five real seconds. Release to launch toward the crosshair at the completed stage; low/downward aim retains a small upward clearance from the surface. The Info panel explains the stages. The first stage is a human-height jump; each following stage doubles target height. The final stage reaches about 39,322 world units above the launch point, beyond the configured planetary atmosphere depths. Launch speed is derived from the current planet's gravity and radius using inverse-square gravitational energy. Full power unlocks at five seconds, including when the frame rate is low. Airborne Space then controls powered flight toward the crosshair.
+Hold Shift to bring both hands forward before counter-thrust builds. The suit holds altitude while Shift is held and uses no fuel for braking or hover. The hands relax once the suit settles, with the boot jets providing lift. Release Shift to coast or use Space to resume powered flight.
 
-Run `node tests/flight-dynamics.test.js` and `node tests/character-motion.test.js` for ballistic gravity, staged launch energy and an integrated atmosphere exit, camera-directed thrust, fuel/braking, opposing arm extension, visible combined exhaust alignment in all aim directions, rotation limits, and walking/running regressions.
+On the ground, hold Space for up to five seconds to charge the 16-stage launch. The character squats with both boots planted, then launches vertically with a short ignition burst. The first stage is a human-height jump and successive stages double the target height. Fast horizontal arrivals use a shoulder roll.
+
+Run `node tests/hover-steering.test.js`, `node tests/flight-dynamics.test.js`, `node tests/propulsor-rig.test.js`, and `node tests/character-motion.test.js` to check the flight and animation. The motion studio previews braking at `animation-lab.html?motion=hoverhold` and launch at `animation-lab.html?motion=rocket`.
 
 ## Continuous terrain boundaries
 
@@ -106,4 +108,4 @@ Build 20261103.12 raises ordinary surface thrust from 40 to 56 world units/s², 
 
 Build 20261103.14 keeps the responsive flight-arm tracking and constrains powered wrist aiming to a neutral, bounded flexion hinge. It does not roll the cuff around the forearm to aim an emitter; the nozzle gimbal completes the remaining direction. The elbow pole is corrected only when it approaches an inward/undefined bend plane. Regression coverage uses the real GLB and idle mixer at 30/144 FPS, sweeping up/down/sideways and releasing the actual engine, checking the wrist flexion plane and preserving walking/running and emitter-direction checks.
 
-Production release: **20261103.14**. This release retains the approved neutral-wrist repulsor animation and excludes the later descent and arm-targeting experiments.
+Production release: **20261104.31.2**.

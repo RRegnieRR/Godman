@@ -74,7 +74,7 @@
       this.air = this.power = this.brake = this.water = this.crouch = this.move = this.run = 0;
       this.turn = 0;
       this.walkSample=[0,0,0];this.runSample=[0,0,0];
-      this.lookExtension = 0;
+      this.rollUp=new T.Vector3();this.rollFloor=false;this.lookExtension = 0;this.flightPivot=new T.Vector3();this.coordinated=false;
       this.chains = [];
       this.q = new T.Quaternion();
       this.inverse = new T.Quaternion();
@@ -159,6 +159,7 @@
     }
 
     reset(){
+      this.coordinated=false;this.flightPivot.set(0,0,0);
       this.phase=this.time=this.air=this.power=this.brake=this.water=this.crouch=this.move=this.run=this.turn=0;
       this.frame.position.set(0,0,0);this.frame.rotation.set(0,Math.PI,0);
       this.attitude.copy(this.frame.parent.quaternion);
@@ -166,7 +167,21 @@
       for(const c of this.chains){c.footPlant=1;c.nodes.forEach((n,i)=>{n.quaternion.copy(c.rest[i]);c.previous[i].copy(c.rest[i]);});}
     }
 
-    orient(dt, base, up, thrust, velocity, grounded, water, space=0) {
+    orient(dt, base, up, thrust, velocity, grounded, water, space=0, sharedRig=null, landing=null) {
+      this.flightRig=sharedRig;
+      this.rollFloor=grounded&&!water&&!!landing?.roll&&landing.age<.96;
+      if(this.rollFloor)this.rollUp.copy(up);
+      this.coordinated=!!sharedRig&&!grounded&&!water;
+      if(this.coordinated){
+        this.attitude.copy(sharedRig.attitude);
+        if(landing&&landing.flare>0)this.attitude.slerp(base,landing.flare);
+        this.angularVelocity.copy(sharedRig.angularVelocity);
+        this.frame.parent.quaternion.copy(this.attitude);this.inverse.copy(this.attitude).invert();
+        this.flightLoad.copy(thrust).applyQuaternion(this.inverse);
+        const pivot=this.chains[0].points[0].y;
+        this.flightPivot.copy(up).applyQuaternion(this.inverse).multiplyScalar(pivot);this.flightPivot.y-=pivot;
+        this.lookExtension=clamp(1-Math.abs(sharedRig.bodyUp.dot(up)),0,1);return;
+      }
       dt=Math.min(dt,.05);
       this.attitudeTarget.copy(base);
       // Ground/water frames must not reuse the previous frame's body-up scratch
@@ -201,7 +216,27 @@
           const rate=this.angularVelocity.length();
           if(rate>1e-7){this.angularError.copy(this.angularVelocity).divideScalar(rate);this.rotationStep.setFromAxisAngle(this.angularError,rate*h);this.attitude.multiply(this.rotationStep).normalize();}
         }
-      } else {this.attitude.copy(base);this.angularVelocity.set(0,0,0);}
+      } else {
+        this.attitude.copy(base);
+        if(this.rollFloor){
+          // Turn around the axis across the travel path. Start from the
+          // actual incoming pose, not the standing landing orientation.
+          const progress=smooth(0,.77,landing.age);
+          const pitch=Math.PI*.5+(Math.PI*1.5)*progress;
+          this.angularError.crossVectors(up,landing.travel).normalize();
+          this.attitudeTilt.setFromAxisAngle(this.angularError,pitch);
+          this.attitude.premultiply(this.attitudeTilt);
+          this.rotationStep.setFromAxisAngle(this.angularError,Math.PI*1.5*progress);
+          this.attitude.slerp(this.rotationStep.multiply(landing.from),1-smooth(0,.24,landing.age));
+          this.attitudeTilt.setFromAxisAngle(this.angularError.copy(landing.travel).normalize(),.19*Math.sin(Math.PI*progress));
+          this.attitude.premultiply(this.attitudeTilt);
+        }else if(grounded&&landing&&landing.from&&landing.age<.32){
+          const remaining=1-smooth(0,.32,landing.age);
+          const angle=this.attitude.angleTo(landing.from);
+          this.attitude.slerp(landing.from,remaining*Math.min(1,.30/Math.max(angle,1e-6)));
+        }
+        this.angularVelocity.set(0,0,0);
+      }
       this.frame.parent.quaternion.copy(this.attitude);
       this.inverse.copy(this.attitude).invert();
       this.flightLoad.copy(this.force).applyQuaternion(this.inverse);
@@ -269,7 +304,7 @@
         // Idle contains a deliberately bent relaxed wrist. During running,
         // use the neutral bind alignment so hand and forearm form one line.
         const running=this.move*this.run*(1-this.air)*(1-this.water);
-        end.quaternion.slerp(end.userData.motionBindQuaternion||c.rest[2],Math.max(running,this.power,this.brake));
+        end.quaternion.slerp(end.userData.motionBindQuaternion||c.rest[2],Math.max(running,this.power,this.brake,this.launchAimWeight||0));
         this.frame.getWorldQuaternion(c.worldQ);
         end.parent.getWorldQuaternion(c.parentQ).invert();
         c.from.copy(X).applyQuaternion(c.worldQ).applyQuaternion(c.parentQ);
@@ -318,7 +353,7 @@
         end.quaternion.copy(c.neutralFoot).multiply(c.delta);
       }
       const runningHand=this.move*this.run*(1-this.air)*(1-this.water);
-      const flightHand=Math.max(this.power,this.brake);
+      const flightHand=Math.max(this.power,this.brake,this.launchAimWeight||0);
       if(c.type==='arm'&&flightHand>.001&&runningHand<=flightHand){
         // Suit wrists flex on a hinge; aiming must not roll the whole cuff.
         // Work in the neutral hand's local frame, with a continuous front
@@ -326,7 +361,7 @@
         this.frame.getWorldQuaternion(c.worldQ);
         c.to.copy(c.exhaust||this.exhaust).applyQuaternion(c.worldQ);
         end.getWorldQuaternion(c.parentQ).invert();c.to.applyQuaternion(c.parentQ);
-        const participation=c.thrustShare===undefined?1:smooth(.18,.65,c.thrustShare);
+        const participation=c.wristParticipation===undefined?(c.thrustShare===undefined?1:smooth(.18,.65,c.thrustShare)):c.wristParticipation;
         const bend=1.05*Math.tanh(Math.atan2(c.to.x,Math.max(.15,-c.to.y))/1.05)*flightHand*participation;
         c.delta.setFromAxisAngle(c.axis.set(0,0,1),bend);end.quaternion.multiply(c.delta);
       }else if(c.type==='arm'&&this.power+this.brake+runningHand>.001){
@@ -370,8 +405,8 @@
       // heel recovery arrives late and a running leg never finishes its swing.
       const groundResponse=this.move*(1-this.air);
       const runTracking=c.runTracking||0;
-      const blend = T.MathUtils.lerp(1 - Math.exp(-(22+58*groundResponse) * dt),1,runTracking);
-      const jointRate=7.5+10.5*groundResponse+12*runTracking;
+      const blend = T.MathUtils.lerp(1 - Math.exp(-(22+58*groundResponse) * dt),1,Math.max(runTracking,c.launchTracking||0));
+      const jointRate=7.5+10.5*groundResponse+12*runTracking+20*(c.launchTracking||0);
       for (let i = 0; i < 3; i++) {
         const distance=c.previous[i].angleTo(c.nodes[i].quaternion);
         c.previous[i].rotateTowards(c.nodes[i].quaternion,Math.min(distance*blend,jointRate*dt));

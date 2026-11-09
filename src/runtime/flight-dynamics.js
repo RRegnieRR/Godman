@@ -10,11 +10,78 @@
       this.force=new T.Vector3();this.direction=new T.Vector3(0,1,0);
       this.previousVelocity=new T.Vector3();this.relative=new T.Vector3();
       this.desired=new T.Vector3();this.turn=new T.Quaternion();this.identity=new T.Quaternion();
+      this.rig=g.GodmanPropulsorRig?new g.GodmanPropulsorRig():null;this.coordinated=false;
+      this.launchImpulse=new T.Vector3();this.launchAim=new T.Vector3();this.launchAge=99;this.launchDuration=0;this.launchFlash=0;this.launchCharge=0;this.launchCost=0;this.launchDelay=.16;this.launchQueued=false;this.preparedDt=-1;this.integrationScale=1;
+      this.hovering=false;this.hoverLocked=false;this.hoverRadius=NaN;this.hoverBody=null;
+      this.hoverVelocity=new T.Vector3();this.hoverAim=new T.Vector3(0,1,0);
+      this.brakeForce=new T.Vector3();this.brakeDirection=new T.Vector3();this.brakeHeading=new T.Vector3();this.brakeReach=0;
+      this.primaryForce=new T.Vector3();this.steeringForce=new T.Vector3();this.steeringThrottle=0;
     }
-    reset(){this.spool=this.throttle=this.brake=this.acceleration=this.fuelUsed=0;this.powered=false;this.force.set(0,0,0);}
+    reset(){this.spool=this.throttle=this.brake=this.acceleration=this.fuelUsed=0;this.powered=false;this.force.set(0,0,0);this.coordinated=false;if(this.rig)this.rig.reset();this.launchAge=99;this.launchFlash=0;this.launchQueued=false;this.preparedDt=-1;this.integrationScale=1;this.hovering=this.hoverLocked=false;this.hoverRadius=NaN;this.hoverBody=null;this.steeringThrottle=this.brakeReach=0;this.brakeForce.set(0,0,0);this.brakeDirection.set(0,0,0);this.primaryForce.set(0,0,0);this.steeringForce.set(0,0,0);}
+    beginLaunch(charge,aim,up,gravity,radius,fuel=100){
+      if(fuel<.5)return false;
+      this.reset();this.launchCharge=T.MathUtils.clamp(charge,0,1);
+      // The cinematic takeoff is vertical. Aerial steering begins after lift-off.
+      this.launchImpulse.copy(up).multiplyScalar(this.jumpVelocity(charge,gravity,radius));
+      this.launchAim.copy(up);this.direction.copy(up);this.desired.copy(up);
+      this.launchDuration=.16+.29*this.launchCharge;this.launchAge=0;this.launchFlash=0;this.launchQueued=true;this.launchCost=Math.min(fuel,.8+3.2*this.launchCharge);
+      this.launchImpulse.multiplyScalar(Math.sqrt(Math.min(1,fuel/(.8+3.2*this.launchCharge))));
+      return true;
+    }
+    prepareLaunch(dt){
+      if(!this.launchQueued)return false;
+      const remaining=this.launchDelay-this.launchAge;
+      this.launchAge=Math.min(this.launchDelay,this.launchAge+dt);
+      if(this.launchAge>=this.launchDelay){
+        this.launchQueued=false;this.preparedDt=Math.max(0,dt-remaining);return true;
+      }return false;
+    }
     update(dt,s){
+      this.integrationScale=1;
+      if(this.preparedDt>=0){const frameDt=dt;dt=this.preparedDt;this.preparedDt=-1;this.integrationScale=frameDt>0?dt/frameDt:0;}
       const v=s.velocity;this.previousVelocity.copy(v);
-      const wants=!!s.thrust&&s.fuel>0&&!s.braking;
+      const launching=this.launchAge<this.launchDelay+this.launchDuration;
+      const wants=!!s.thrust&&s.fuel>0&&!s.braking&&!launching;
+      // Shift holds the radius captured on press. Releasing it immediately
+      // hands control back to normal coasting or powered flight.
+      const holdAltitude=!!s.braking&&!launching;
+      if(!holdAltitude){
+        this.hoverLocked=false;
+        this.hoverRadius=NaN;
+      }else{
+        if(!this.hovering||this.hoverBody!==s.body){
+          this.hoverBody=s.body;
+          this.brakeHeading.copy(s.heading||this.desired).projectOnPlane(s.up);
+          if(this.rig?.initialized){
+            // Keep the suit's left/right axis when coming out of a dive,
+            // even if the player is already looking in another direction.
+            this.hoverAim.set(1,0,0).applyQuaternion(this.rig.attitude).projectOnPlane(s.up);
+            if(this.hoverAim.lengthSq()>.04)this.brakeHeading.crossVectors(s.up,this.hoverAim);
+          }
+          if(this.brakeHeading.lengthSq()<1e-6){
+            this.brakeHeading.set(Math.abs(s.up.z)<.9?0:1,0,-1).projectOnPlane(s.up);
+          }
+          this.brakeHeading.normalize();
+          this.hoverLocked=false;
+          this.hoverRadius=s.position&&s.center?s.position.distanceTo(s.center):NaN;
+        }
+        this.hoverVelocity.copy(v).sub(s.frameVelocity);
+        const upright=!this.rig||!this.rig.initialized||
+          (this.rig.bodyUp.dot(s.up)>.995&&this.rig.angularVelocity.length()<.05);
+        this.hoverLocked=this.hoverVelocity.length()<.025&&upright;
+        this.desired.copy(s.up);
+      }
+      this.hovering=holdAltitude;
+      if(wants)this.desired.copy(s.aim).normalize();
+      if(launching)this.desired.copy(this.launchAim);
+      if(s.braking&&!this.hovering){this.desired.copy(v).sub(s.frameVelocity);if(this.desired.lengthSq()>.01)this.desired.normalize().negate();else this.desired.copy(s.up);}
+      if(s.heading&&this.rig){
+        const correcting=this.rig.angularVelocity.length()>.04&&s.fuel>0;
+        const active=wants||launching||this.hovering||this.spool>.015||this.brake>.015||correcting;
+        const pressure=this.hovering?1:T.MathUtils.smoothstep(s.fuel,0,4);
+        this.rig.update(dt,{up:s.up,heading:this.hovering?this.brakeHeading:wants||launching||!this.rig.initialized?s.heading:this.rig.heading,aim:this.desired.lengthSq()>.5?this.desired:s.up,active,braking:this.hovering,drive:!this.hovering&&!launching,surface:s.surface,hover:this.hoverLocked,authority:(this.hovering?Math.max(s.gravity.length(),8):Math.max(correcting?8:0,this.acceleration*this.spool))*pressure});
+        this.coordinated=true;this.direction.copy(this.rig.direction);
+      }
       const previousSpool=this.spool,target=wants?1:0,rate=wants?4.5:s.braking?10:6;
       this.spool=damp(this.spool,target,rate,dt);
       // Integrate the spool curve, rather than using its end-of-frame value.
@@ -36,7 +103,8 @@
         if(previousSpool<.001)this.acceleration=requested;
         else this.acceleration=damp(this.acceleration,requested,4,dt);
         this.acceleration=Math.min(this.acceleration,limit);
-        if(wants){
+        if(this.coordinated){this.direction.copy(this.rig.direction);}
+        else if(wants){
           this.desired.copy(s.aim).normalize();
           if(this.desired.lengthSq()>.5){
             if(previousSpool<.001)this.direction.copy(this.desired);
@@ -55,17 +123,91 @@
         const pressure=T.MathUtils.smoothstep(s.fuel-this.fuelUsed*.5,0,4);
         this.throttle=this.spool*pressure;
         this.force.copy(this.direction).multiplyScalar(this.acceleration*meanSpool*pressure*(1-this.brake));
+        if(this.coordinated){this.force.multiplyScalar(this.rig.alignment);this.throttle*=this.rig.alignment;this.fuelUsed*=this.rig.alignment;}
       }else if(s.fuel<=0){this.spool=0;}
-      v.addScaledVector(s.gravity,dt).addScaledVector(this.force,dt);
+      const previousLaunchAge=this.launchAge;
+      if(launching){
+        const a=T.MathUtils.clamp((this.launchAge-this.launchDelay)/this.launchDuration,0,1);
+        this.launchAge+=dt;if(this.launchAge>=this.launchDelay)this.launchQueued=false;const b=T.MathUtils.clamp((this.launchAge-this.launchDelay)/this.launchDuration,0,1);
+        const fraction=(b*b*(3-2*b)-a*a*(3-2*a)),cost=this.launchCost*fraction;
+        const burned=Math.min(Math.max(0,s.fuel-this.fuelUsed),cost),pressure=cost>0?burned/cost:0;
+        if(dt>0)this.force.addScaledVector(this.launchImpulse,fraction*pressure/dt);
+        this.fuelUsed+=burned;this.direction.copy(this.launchAim);
+        this.throttle=Math.max(this.throttle,Math.min(1,fraction*this.launchDuration/Math.max(dt,1e-8)/1.5)*pressure);
+      }else if(this.launchAge<2)this.launchAge+=dt;
+      this.launchFlash=this.launchAge>=this.launchDelay&&this.launchAge<2?(previousLaunchAge<=this.launchDelay?1:Math.exp(-(this.launchAge-this.launchDelay)*15))*(1+this.launchCharge):0;
+      let holdVerticalSpeed=0;
+      this.brakeForce.set(0,0,0);
+      this.brakeDirection.set(0,0,0);
+      this.brakeReach=0;
+      if(this.hovering){
+        const height=s.position&&s.center?s.position.distanceTo(s.center):NaN;
+        const error=Number.isFinite(height)&&Number.isFinite(this.hoverRadius)?this.hoverRadius-height:0;
+        const vertical=this.hoverVelocity.dot(s.up);
+        const gravitySupport=Math.max(0,-s.gravity.dot(s.up));
+        const correction=T.MathUtils.clamp(error*5-vertical*2,-gravitySupport,40);
+        holdVerticalSpeed=T.MathUtils.clamp(error*3,-8,8);
+        this.force.copy(s.gravity).negate().addScaledVector(s.up,correction);
+        const authority=T.MathUtils.clamp(Math.max(56,s.gravity.length()*2.6),56,80);
+        this.force.clampLength(0,authority);
+        this.direction.copy(this.force.lengthSq()>.000001?this.hoverAim.copy(this.force).normalize():s.up);
+        this.throttle=Math.max(.08,this.force.length()/authority);
+        this.fuelUsed=0;
+      }
+      this.primaryForce.copy(this.force);this.steeringThrottle=0;
+      if(this.coordinated&&!launching){
+        const pressure=this.hovering?1:T.MathUtils.smoothstep(s.fuel,0,4);
+        const rated=this.hovering?T.MathUtils.clamp(Math.max(56,s.gravity.length()*2.6),56,80):Math.max(1,this.acceleration);
+        const budget=this.hovering?rated*pressure:Math.min(rated,rated*Math.max(this.spool,meanSpool))*pressure;
+        const cost=this.hoverLocked?0:this.rig.controlCost;
+        this.primaryForce.clampLength(0,Math.max(0,budget-cost));
+        this.steeringForce.copy(this.rig.controlNet).applyQuaternion(this.rig.attitude);
+        this.force.copy(this.primaryForce).add(this.steeringForce);
+        if(this.force.lengthSq()>.000001)this.direction.copy(this.force).normalize();
+        this.steeringThrottle=T.MathUtils.clamp(cost/rated,0,1);
+        this.throttle=Math.max(this.throttle,this.force.length()/rated,this.steeringThrottle);
+        const burn=T.MathUtils.lerp(2,10,T.MathUtils.clamp(s.surface,0,1));
+        this.fuelUsed=this.hovering?0:Math.min(s.fuel,burn*(this.primaryForce.length()+cost)/rated*dt);
+      }
+      if(this.hovering&&!this.hoverLocked){
+        this.brakeDirection.copy(this.hoverVelocity).projectOnPlane(s.up);
+        const speed=this.brakeDirection.length();
+        const moving=T.MathUtils.smoothstep(speed,.25,2.5);
+        this.brakeReach=T.MathUtils.smoothstep(this.brake,.02,.62)*moving;
+        if(dt>0&&speed>1e-6){
+          this.brakeDirection.divideScalar(speed);
+          const rated=T.MathUtils.clamp(Math.max(56,s.gravity.length()*2.6),56,80);
+          const remaining=Math.max(0,rated-this.primaryForce.length()-(this.coordinated?this.rig.controlCost:0));
+          // Give the arms a brief lead before the counter-thrust builds.
+          const ignition=T.MathUtils.smoothstep(this.brake,.82,.98);
+          const deceleration=ignition*Math.min(38,remaining,speed*(-Math.expm1(-this.brake*3*dt))/dt);
+          this.brakeForce.copy(this.brakeDirection).multiplyScalar(-deceleration);
+          this.force.add(this.brakeForce);
+          this.throttle=Math.max(this.throttle,deceleration/56);
+        }
+      }
+      const gravityTime=launching?Math.min(dt,Math.max(0,this.launchAge-this.launchDelay)):dt;
+      v.addScaledVector(s.gravity,gravityTime).addScaledVector(this.force,dt);
       // No invisible WASD acceleration during a ballistic jump.
-      if(this.brake>.001){
-        this.relative.copy(v).sub(s.frameVelocity).multiplyScalar(Math.exp(-this.brake*3*dt));
+      if(this.brake>.001||this.hovering){
+        const damping=this.brake*3;
+        this.relative.copy(v).sub(s.frameVelocity);
+        const radialSpeed=this.relative.dot(s.up);
+        if(!this.hovering)this.relative.multiplyScalar(Math.exp(-damping*dt));
+        if(this.hovering){
+          // Keep the original horizontal braking. Radially, slow toward a
+          // bounded correction speed so a fast climb can return to its hold point.
+          const verticalSpeed=damp(radialSpeed,holdVerticalSpeed,16,dt);
+          this.relative.addScaledVector(s.up,verticalSpeed-this.relative.dot(s.up));
+        }
         v.copy(s.frameVelocity).add(this.relative);
       }
-      this.powered=this.throttle>.015&&this.force.lengthSq()>.0001;
+      this.powered=this.throttle>.015&&(this.force.lengthSq()>.0001||this.hovering);
+      if(this.coordinated&&this.rig.updatePorts)this.rig.updatePorts(this.primaryForce,this.hoverLocked,launching,this.brakeForce);
       return this;
     }
     integrate(position,velocity,dt){
+      dt*=this.integrationScale;
       position.addScaledVector(this.previousVelocity,dt*.5).addScaledVector(velocity,dt*.5);
     }
     jumpStage(charge){return Math.max(1,Math.min(16,Math.floor(T.MathUtils.clamp(charge,0,1)*16+1e-9)));}

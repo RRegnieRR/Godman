@@ -9,9 +9,11 @@ global.window=global;
 require('../src/data/run-motion.js');
 require('../src/data/walk-motion.js');
 require('../src/data/athletic-run.js');
+require('../src/runtime/launch-sequence.js');
 require('../src/runtime/character-motion.js');
 require('../src/runtime/running-gait.js');
 require('../src/runtime/character-controller.js');
+require('../src/runtime/propulsor-rig.js');
 require('../src/runtime/flight-dynamics.js');
 const WALK_SPEED=global.GodmanMotionSettings.walkSpeed,RUN_SPEED=global.GodmanMotionSettings.runSpeed;
 const file=fs.readFileSync(path.join(__dirname,'../assets/character/rigged-astronaut.glb'));
@@ -495,6 +497,109 @@ for(const hz of [30,144])for(const pitch of [-.9,-.3,.3]){
  }
  r.controller.reset();
  for(const c of arms)assert.ok(c.nodes.every(n=>n.quaternion.toArray().every(Number.isFinite)),'Flight arm failed to reset');
+}
+// The actual game supplies the engine's shared frame. Test the imported rig
+// through full reversals and dives, not only a settled wrist or isolated servo.
+for(const hz of [30,144]){
+ const r=rig(),mixer=idleMixer(r),engine=new GodmanFlightDynamics(),v=new T.Vector3(),zero=new T.Vector3(),dt=1/hz;
+ for(let i=0;i<hz*12;i++){
+  const t=i*dt,aim=t<1?up:t<3?new T.Vector3(0,0,-1):t<5?new T.Vector3(0,0,1):t<8?new T.Vector3(.1,-1,-.1).normalize():up;
+  const heading=aim.clone().projectOnPlane(up);if(heading.lengthSq()<.01)heading.set(0,0,-1);heading.normalize();
+  engine.update(dt,{velocity:v,gravity:new T.Vector3(0,-9.81,0),up,heading,aim,frameVelocity:zero,surface:1,fuel:100,thrust:t<10,braking:false});
+  if(engine.rig.bootDrive){
+   const resultant=new T.Vector3(),moment=new T.Vector3();
+   for(const port of engine.rig.ports){
+    resultant.add(port.force);
+    moment.add(new T.Vector3().crossVectors(port.lever,port.force));
+   }
+   assert.ok(resultant.applyQuaternion(engine.rig.attitude).distanceTo(engine.force)<1e-7,'Posed jets do not sum to the applied force');
+   assert.ok(moment.distanceTo(engine.rig.controlTorque)<1e-7,'Posed jets do not sum to the applied torque');
+  }
+  mixer.update(dt);r.controller.orient(dt,base,up,engine.direction,v,false,false,0,engine.rig);
+  r.controller.update(dt,{grounded:false,powered:engine.powered,throttle:engine.throttle,space:0,airTime:t,height:20,verticalSpeed:v.y});
+  assert.ok(r.controller.attitude.angleTo(engine.rig.attitude)<1e-6,'Physics and visual flight frames diverged');
+  if(t>1&&engine.force.length()>1){
+   const exhaust=new T.Vector3();
+   for(const c of r.controller.chains){const out=new T.Vector3(),axis=c.type==='arm'?new T.Vector3(0,-1,0):c.nozzleAxis;
+    const alignment=GodmanRepulsorAim(r.frame,c.nodes[2],axis,c.exhaust,out);exhaust.addScaledVector(out,c.thrustShare*alignment);
+   }
+   assert.ok(exhaust.normalize().dot(engine.direction.clone().negate())>.95,'Visible jets disagree with the actual coordinated thrust');
+  }
+  if(t>1&&r.controller.power>.95)for(const c of r.controller.chains.filter(c=>c.type==='arm')){
+   assert.ok(c.sign*(c.goal.x-c.origin.x)>.1,'Shared-frame flight pulls a hand across the torso');
+   assert.ok(c.goal.y<c.origin.y-.8,'A direction reversal whips a hand above the shoulder');
+   const delta=c.nodes[2].userData.motionBindQuaternion.clone().invert().multiply(c.nodes[2].quaternion).normalize();
+   assert.ok(Math.hypot(delta.x,delta.y)<.01,'Shared-frame steering twists the forearm');
+  }
+ }
+}
+// Brake from horizontal flight with the actual suit, then settle into hover.
+{
+ const r=rig(),mixer=idleMixer(r),engine=new GodmanFlightDynamics(),v=new T.Vector3(0,-3,-12),dt=1/60;
+ const forward=new T.Vector3(0,0,-1);
+ let reachedFrames=0;
+ const position=new T.Vector3(0,25,0),center=new T.Vector3(0,-637100,0),zero=new T.Vector3();
+ for(let i=0;i<480;i++){
+  const braking=i>=150;
+  engine.update(dt,{velocity:v,position,center,body:'earth',gravity:new T.Vector3(0,-9.81,0),up,heading:forward,aim:forward,frameVelocity:zero,surface:1,fuel:100,thrust:!braking,braking});
+  engine.integrate(position,v,dt);mixer.update(dt);
+  r.controller.orient(dt,base,up,engine.direction,v,false,false,0,engine.rig);
+  r.controller.update(dt,{grounded:false,powered:engine.powered,throttle:engine.throttle,hoverHold:engine.hoverLocked,brakeReach:engine.brakeReach,brakeDirection:engine.brakeDirection,space:0,airTime:i*dt,height:position.y,verticalSpeed:v.y});
+  if(engine.brakeReach>.85&&engine.brakeForce.length()>22){
+   reachedFrames++;
+   for(const arm of r.controller.chains.filter(c=>c.type==='arm')){
+    const shoulder=arm.nodes[0].getWorldPosition(new T.Vector3());
+    const hand=arm.nodes[2].getWorldPosition(new T.Vector3());
+    const travel=engine.brakeForce.clone().normalize().negate();
+    const advance=hand.sub(shoulder).dot(travel);
+    assert.ok(advance>.18,`Braking hand advanced only ${advance.toFixed(3)} m at ${(i*dt).toFixed(2)} s (${arm.side})`);
+    assert.ok(arm.thrustShare>0,'A hand reached forward without applying braking thrust');
+    const plume=new T.Vector3();
+    GodmanRepulsorAim(r.frame,arm.nodes[2],new T.Vector3(0,-1,0),arm.exhaust,plume);
+    assert.ok(plume.dot(travel)>.65,'Visible palm exhaust misses the braking direction');
+   }
+  }
+ }
+ assert.ok(reachedFrames>=12,'Forward reach did not last through the active braking phase');
+ assert.ok(engine.hoverLocked,'Real-suit hover never settled');
+ for(const c of r.controller.chains){
+  if(c.type==='arm')assert.equal(c.thrustShare,0,'Idle mixer reactivated a hover hand jet');
+  else{
+   assert.ok(c.thrustShare>.1,'Hover has no visible boot support');
+   const out=new T.Vector3();GodmanRepulsorAim(r.frame,c.nodes[2],c.nozzleAxis,c.exhaust,out);
+   assert.ok(out.dot(up.clone().negate())>.95,'Hover sole exhaust does not support the suit');
+  }
+ }
+}
+// Cinematic takeoff: actual skinned boots stay planted while both hands
+// gather at the chest, then strike together before the ignition marker.
+for(const hz of [30,144]){
+ const r=rig(),dt=1/hz;
+ function cinematic(charge,age){
+  r.controller.orient(dt,base,up,up,velocity,age<.16,false,0);
+  r.controller.update(dt,{grounded:age<.16,launchCharge:charge,launchAge:age,powered:age>=.16,throttle:1,rocketLaunch:age>=.16,space:0,height:2,airTime:Math.max(0,age-.16)});
+ }
+ for(let i=0;i<hz*5;i++)cinematic(i/(hz*5),-1);
+ const arms=r.controller.chains.filter(c=>c.type==='arm');
+ const gathered=arms.map(c=>c.nodes[2].getWorldPosition(new T.Vector3()));
+ assert.ok(Math.abs(gathered[0].y-gathered[1].y)<.02&&Math.abs(gathered[0].z-gathered[1].z)<.02,'Charged hands are not synchronized at the chest');
+ assert.ok(gathered.every(p=>p.y>.85),'Charge did not raise both hands to the chest');
+ for(let i=0;i<Math.ceil(.16*hz);i++){
+  const age=i*dt;cinematic(1,age);
+  for(const side of ['L','R']){
+   const sole=lowestBoot(r,side);
+   assert.ok(Math.abs(sole-floor)<.025,`${side} planted boot at ${hz}fps / ${age}s: ${sole} vs ${floor}`);
+  }
+ }
+ cinematic(1,.16);
+ const released=arms.map(c=>c.nodes[2].getWorldPosition(new T.Vector3()));
+ assert.ok(released.every((p,i)=>gathered[i].y-p.y>.25),'Release did not drive both hands down explosively');
+ assert.ok(Math.abs(released[0].y-released[1].y)<.02&&Math.abs(released[0].z-released[1].z)<.02,'Arm strike lost left/right synchronization');
+ for(const c of arms){
+  const palm=new T.Vector3(0,-1,0).applyQuaternion(c.nodes[2].getWorldQuaternion(new T.Quaternion()));
+  assert.ok(palm.dot(up.clone().negate())>.78,'Ignition palm does not face the ground');
+ }
+ assert.ok(r.controller.headExtension>.5,'Explosive release does not lift the head');
 }
 function fallingPose(verticalSpeed){
  const r=rig();for(let i=0;i<120;i++)step(r,{grounded:false,space:0,airTime:.5,height:10,verticalSpeed},1/120);
