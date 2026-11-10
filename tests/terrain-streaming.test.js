@@ -2,22 +2,42 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm');
 const T=require('../vendor/three.r128.min.js');
+require('../src/runtime/terrain-surface.js');
 const source=fs.readFileSync(require.resolve('../src/game.js'),'utf8');
-const start=source.indexOf('  function updateEarthSurfaceTiles(){'),end=source.indexOf('\n  function horizDir()',start);
 function fixture(code){
   const tiles={tiles:new Map(),tileSize:480,activeRadius:3,frame:0,committedKeys:new Set(),committedCenter:new T.Vector3(0,1,0),committedSignature:'',pendingKeys:new Set(),pendingCenter:new T.Vector3(0,1,0),pendingSignature:''};
   const earth={r:637100,center:new T.Vector3(),mesh:new T.Group()};
   let builds=0;
-  const context={stitchEarthSurfaceTiles(){},THREE:T,earth,earthSurfaceTiles:tiles,earthElevation:{ready:true},pos:new T.Vector3(-earth.r,0,0).applyAxisAngle(new T.Vector3(0,1,0),.0004),earthTileQ:new T.Quaternion(),earthTileN:new T.Vector3(),earthTileCenterWorld:{value:new T.Vector3()},earthSurfaceCutaway:{center:{value:new T.Vector3()},cosRadius:{value:2}},performance:{now:()=>0},
+  const context={window:global,stitchEarthSurfaceTiles(){},THREE:T,earth,earthSurfaceTiles:tiles,earthElevation:{ready:true},pos:new T.Vector3(-earth.r,0,0).applyAxisAngle(new T.Vector3(0,1,0),.0004),earthTileQ:new T.Quaternion(),earthTileN:new T.Vector3(),earthTileCenterWorld:{value:new T.Vector3()},earthSurfaceCutaway:{center:{value:new T.Vector3()},cosRadius:{value:2},orbitalCosRadius:{value:2},detail:{value:1}},performance:{now:()=>0},
+    earthDetailRoot:earth.mesh,
     buildEarthSurfaceTile(ix,iy,lonCells,latCells,lod){
       const key=ix+':'+iy+':'+lod,tile={key,group:new T.Group(),lastUsed:0};builds++;tiles.tiles.set(key,tile);earth.mesh.add(tile.group);return tile;
     }};
-  vm.createContext(context);vm.runInContext(code.slice(code.indexOf('  function updateEarthSurfaceTiles(){'),code.indexOf('\n  function horizDir()',code.indexOf('  function updateEarthSurfaceTiles(){'))),context);
+  vm.createContext(context);vm.runInContext(code.slice(code.indexOf('  function updateEarthCutaway('),code.indexOf('\n  function horizDir()',code.indexOf('  function updateEarthCutaway('))),context);
   return {context,tiles,earth,tick:()=>context.updateEarthSurfaceTiles(),builds:()=>builds};
 }
 const r=fixture(source);
 function settle(){let frames=0;do{r.tick();assert.ok(++frames<300,'Terrain never committed');}while(r.tiles.committedSignature!==r.tiles.pendingSignature);}
-settle();const built=r.builds(),committed=r.tiles.committedKeys;
+function checkCutawayCoverage(){
+ const cap=r.context.earthSurfaceCutaway;
+ assert.ok(cap.orbitalCosRadius.value>=cap.cosRadius.value,'Orbital terrain cuts away more than the detailed surface covers');
+ if(cap.cosRadius.value>1)return;
+ const center=r.tiles.committedCenter,tangent=new T.Vector3(0,1,0).cross(center).normalize();
+ const bitangent=center.clone().cross(tangent).normalize(),radius=Math.acos(cap.cosRadius.value);
+ const size=r.tiles.tileSize/r.earth.r,cols=Math.ceil(Math.PI*2/size),rows=Math.ceil(Math.PI/size);
+ const loaded=new Set([...r.tiles.committedKeys].map(k=>k.split(':').slice(0,2).join(':')));
+ for(let i=0;i<96;i++){
+  const angle=i*Math.PI*2/96;
+  const point=center.clone().multiplyScalar(Math.cos(radius))
+   .addScaledVector(tangent,Math.sin(radius)*Math.cos(angle))
+   .addScaledVector(bitangent,Math.sin(radius)*Math.sin(angle));
+  const lon=(Math.atan2(point.z,-point.x)+Math.PI*2)%(Math.PI*2);
+  const lat=Math.asin(Math.max(-1,Math.min(1,point.y)));
+  const key=Math.floor(lon/(Math.PI*2)*cols)+':'+Math.min(rows-1,Math.floor((lat+Math.PI*.5)/Math.PI*rows));
+  assert.ok(loaded.has(key),'The terrain cutaway exposes sky beyond the loaded tiles: '+key);
+ }
+}
+settle();checkCutawayCoverage();const built=r.builds(),committed=r.tiles.committedKeys;
 const oldWanted=r.tiles.pendingKeys;
 for(let i=0;i<500;i++)r.tick();
 assert.equal(r.builds(),built,'Stationary terrain rebuilt');
@@ -30,14 +50,22 @@ r.tick();assert.ok(r.context.earthTileCenterWorld.value.distanceTo(center)>1e-8,
 const oldPosition=r.context.pos.clone();
 r.context.pos.applyAxisAngle(new T.Vector3(0,1,0),.002);
 r.tick();assert.equal(r.tiles.committedKeys,committed,'Incomplete replacement removed the visible ring');
+const pendingPlan=r.tiles.pendingKeys;
+r.tick();assert.equal(r.tiles.pendingKeys,pendingPlan,'Terrain rebuilt the same streaming plan on the next frame');
 r.context.pos.copy(oldPosition);r.tick();
 assert.equal(r.tiles.pendingSignature,r.tiles.committedSignature,'Reversing across a boundary kept stale pending terrain');
 r.context.pos.applyAxisAngle(new T.Vector3(0,1,0),.002);settle();
 assert.notEqual(r.tiles.committedKeys,committed);
 for(const key of r.tiles.committedKeys)assert.ok(r.tiles.tiles.get(key).group.visible,'Committed terrain has a hole');
-r.tiles.activeRadius=5;settle();assert.ok(r.tiles.committedKeys.size>committed.size,'Range setting did not invalidate terrain');
-r.context.pos.set(0,r.earth.r,0);settle();assert.ok(r.tiles.committedKeys.size>0,'Polar selection failed');
+r.tiles.activeRadius=5;settle();checkCutawayCoverage();assert.ok(r.tiles.committedKeys.size>committed.size,'Range setting did not invalidate terrain');
+r.context.pos.set(.035,.999,0).normalize().multiplyScalar(r.earth.r);settle();checkCutawayCoverage();
+r.context.pos.set(0,r.earth.r,0);settle();checkCutawayCoverage();assert.ok(r.tiles.committedKeys.size>0,'Polar selection failed');
 assert.equal(new Set([...r.tiles.committedKeys].map(k=>k.split(':').slice(0,2).join(':'))).size,r.tiles.committedKeys.size,'Polar terrain renders overlapping LODs');
+r.context.pos.normalize().multiplyScalar(r.earth.r+4100);r.tick();
+assert.ok(r.tiles.committedKeys.size>0,'Approach tiles were unloaded before the player descended');
+assert.equal(r.context.earthSurfaceCutaway.cosRadius.value,2,'Detailed terrain still forms a disc in the orbital view');
+assert.equal(r.context.earthSurfaceCutaway.orbitalCosRadius.value,2,'Hidden tiles left a hole in the globe');
+assert.equal(r.context.earthSurfaceCutaway.detail.value,0,'Local snow color remains visible just before the orbital handoff');
 r.context.pos.multiplyScalar(2);r.tick();assert.equal(r.tiles.committedKeys.size,0);assert.equal(r.context.earthSurfaceCutaway.cosRadius.value,2);
 assert.ok([...r.tiles.tiles.values()].every(t=>!t.group.visible),'Orbital view retained local tiles');
 r.context.pos.set(-r.earth.r,0,0);settle();assert.ok(r.tiles.committedKeys.size>0,'Returning from orbit did not restore terrain');

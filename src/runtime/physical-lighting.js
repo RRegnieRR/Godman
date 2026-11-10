@@ -25,6 +25,14 @@
   }
 
   class PhysicalLighting {
+    static earthTwilight(sunHeight) {
+      const smooth = (min, max) => {
+        const x = clamp((sunHeight - min) / (max - min), 0, 1);
+        return x * x * (3 - 2 * x);
+      };
+      return smooth(-.16, -.06) * (1 - smooth(.01, .18));
+    }
+
     constructor(THREE, renderer, config, lights) {
       this.THREE = THREE;
       this.renderer = renderer;
@@ -32,6 +40,7 @@
       this.lights = lights;
       this.starColor = new THREE.Color(1, 0.95, 0.86);
       this.horizonColor = new THREE.Color(1, 0.42, 0.16);
+      this.twilightSkyColor = new THREE.Color(1, 0.78, 0.68);
     }
 
     update(state) {
@@ -51,13 +60,17 @@
 
       blackbodyRgb(this.THREE, star.temperature || 5772, this.starColor);
       const horizonWarmth = state.nearAtmosphere * clamp(1 - Math.abs(state.sunHeight) * 3.5, 0, 1);
-      this.starColor.lerp(this.horizonColor, horizonWarmth * 0.42);
+      const twilight = state.twilight || 0;
+      this.starColor.lerp(this.horizonColor, horizonWarmth * (0.42 + 0.22 * twilight));
 
       const eclipse = state.eclipse == null ? 1 : clamp(state.eclipse, 0, 1);
       const directVisibility = (state.surface || state.nearAtmosphere ? state.directDay : 1) * eclipse;
       this.lights.key.color.copy(this.starColor);
       this.lights.key.intensity = perceivedDirect * directVisibility * 1.18;
       this.lights.ambient.intensity = 0.018 + 0.12 * state.skyFactor;
+      if (state.skyTint != null) {
+        this.lights.sky.color.setHex(state.skyTint).lerp(this.twilightSkyColor, twilight * 0.88);
+      }
       this.lights.sky.intensity = 0.008 + 0.34 * state.skyFactor;
       if(this.lights.rim)this.lights.rim.intensity=0;
       const darkness=1-clamp(perceivedDirect*directVisibility,0,1);

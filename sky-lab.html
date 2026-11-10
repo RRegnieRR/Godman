@@ -4,16 +4,16 @@
 <label for="body">World</label><select id="body"><option>Earth</option><option>Mars</option><option>Venus</option><option>Titan</option><option>Moon</option><option>Mercury</option><option>Neptune</option></select>
 <label for="elevation">Sun elevation <span id="angle">45°</span></label><input id="elevation" type="range" min="-90" max="90" step="1" value="45">
 <div class="times"><button data-sun="45">Day</button><button data-sun="0">Sunset</button><button data-sun="-10">Twilight</button><button data-sun="-40">Night</button></div>
-<label for="altitude">Altitude <span id="height">0 km</span></label><input id="altitude" type="range" min="0" max="200" step="1" value="0">
-<label><input type="checkbox" id="clouds" checked> Clouds</label><output id="description"></output><p><a href="index.html?build=20261104.31.2">Open game</a></p></aside><div id="status">Loading sky…</div>
-<script src="vendor/three.r128.min.js"></script><script src="src/runtime/physical-lighting.js?v=20261103.3"></script><script src="src/runtime/planetary-sky.js?v=20261103.5"></script>
+<label for="altitude">Altitude <span id="height">0 km</span></label><input id="altitude" type="range" min="0" max="200" step="0.05" value="0">
+<label><input type="checkbox" id="clouds" checked> Clouds</label><output id="description"></output><p><a href="index.html?build=20261109.34.4">Open game</a></p></aside><div id="status">Loading sky…</div>
+<script src="vendor/three.r128.min.js"></script><script src="src/runtime/physical-lighting.js?v=20261109.40"></script><script src="src/runtime/planetary-sky.js?v=20261109.37"></script>
 <script>
 (function(){
  const T=THREE,scene=new T.Scene();scene.background=new T.Color(0x01040b);
  const camera=new T.PerspectiveCamera(65,innerWidth/innerHeight,.1,1e23);camera.position.set(0,2,0);
  const renderer=new T.WebGLRenderer({antialias:true,logarithmicDepthBuffer:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));renderer.outputEncoding=T.sRGBEncoding;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=.9;document.body.appendChild(renderer.domElement);
  const sunMesh=new T.Mesh(new T.SphereGeometry(6.96e7,24,16),new T.MeshBasicMaterial({color:0xfff5dc,toneMapped:false}));scene.add(sunMesh);
- const sky=new GodmanPlanetarySky(T,scene),ambient=new T.HemisphereLight(0xb6d5ff,0x484537,.5),light=new T.DirectionalLight(0xfff2df,1);scene.add(ambient,light);
+ const sky=new GodmanPlanetarySky(T,scene,renderer.capabilities.isWebGL2||renderer.extensions.has('EXT_frag_depth')),ambient=new T.HemisphereLight(0xb6d5ff,0x484537,.5),light=new T.DirectionalLight(0xfff2df,1);scene.add(ambient,light);
  const ground=new T.Mesh(new T.PlaneGeometry(12000,12000),new T.MeshStandardMaterial({color:0x8e9e7c,roughness:1}));ground.rotation.x=-Math.PI/2;scene.add(ground);
  const earthTexture=new T.TextureLoader().load('assets/earth/earth_day_2048.jpg');earthTexture.encoding=T.sRGBEncoding;
  const globe=new T.Mesh(new T.SphereGeometry(1,256,128),new T.MeshStandardMaterial({color:0xffffff,map:earthTexture,roughness:1}));scene.add(globe);

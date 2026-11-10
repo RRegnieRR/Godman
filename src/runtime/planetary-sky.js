@@ -3,7 +3,7 @@
 (function(g){
   'use strict';
   const PROFILES={
-    Earth:{rayleigh:1,mie:.3,scale:8000,aerosolScale:1200,top:100000,tint:0x72aaff,haze:0,clouds:[{height:2200,coverage:.50,opacity:.94,scale:1800},{height:9000,coverage:.28,opacity:.23,scale:390}]},
+    Earth:{rayleigh:1,mie:.3,scale:8000,aerosolScale:1200,top:100000,tint:0x72aaff,haze:0,clouds:[{height:2200,thickness:1550,coverage:.45,opacity:.82,scale:2550},{height:9000,thickness:1400,coverage:.28,opacity:.23,scale:390}]},
     Mars:{rayleigh:.015,mie:.22,scale:11000,aerosolScale:11000,top:90000,tint:0xd8a080,haze:.16,mars:1,clouds:[{height:22000,coverage:.23,opacity:.16,scale:510}]},
     Venus:{rayleigh:3,mie:8,scale:15000,aerosolScale:12000,top:150000,tint:0xd6b779,haze:.65,clouds:[{height:48000,coverage:1,opacity:1,scale:230}]},
     Titan:{rayleigh:1.2,mie:3,scale:20000,aerosolScale:18000,top:160000,tint:0xc58a43,haze:.48,clouds:[{height:18000,coverage:.67,opacity:.68,scale:320}]},
@@ -123,10 +123,100 @@
       #include <tonemapping_fragment>
       #include <encodings_fragment>
     }`;
+  const cloudVolumeVertex=`#include <common>
+    #include <logdepthbuf_pars_vertex>
+    varying vec3 vCloudWorld;
+    void main(){
+      vCloudWorld=(modelMatrix*vec4(position,1.)).xyz;
+      gl_Position=projectionMatrix*viewMatrix*vec4(vCloudWorld,1.);
+      #include <logdepthbuf_vertex>
+    }`;
+  const cloudVolumeFragment=`#include <common>
+    #include <logdepthbuf_pars_fragment>
+    varying vec3 vCloudWorld;
+    uniform vec3 cloudObserver,sunLocal,sunColor,tint,wind;
+    uniform mat3 cloudBasis;
+    uniform mat4 cloudProjection;
+    uniform float cloudBase,cloudTop,planetRadius,coverage,opacity,frequency,irradiance,eclipse,horizonDip;
+    ${noise}
+
+    // Distances are in planet radii to keep the curved ray calculation
+    // well conditioned at ground level and during the climb to orbit.
+    vec2 cloudSphere(vec3 ro,vec3 ray,float radius){
+      float b=dot(ro,ray);
+      float h=b*b-dot(ro,ro)+radius*radius;
+      if(h<0.)return vec2(-1.);
+      float root=sqrt(h);
+      return vec2(-b-root,-b+root);
+    }
+
+    void main(){
+      vec3 rayWorld=normalize(vCloudWorld-cameraPosition);
+      vec3 ray=cloudBasis*rayWorld;
+      vec2 outer=cloudSphere(cloudObserver,ray,cloudTop);
+      vec2 inner=cloudSphere(cloudObserver,ray,cloudBase);
+      float start=max(0.,outer.x),end=outer.y;
+      // Only march the nearest occupied interval. From below the base, the
+      // interval starts on the far side of the inner sphere.
+      if(inner.x>start)end=min(end,inner.x);
+      else if(inner.y>start)start=inner.y;
+      vec2 surface=cloudSphere(cloudObserver,ray,1.);
+      if(surface.x>0.)end=min(end,surface.x);
+      float thickness=cloudTop-cloudBase;
+      float path=end-start;
+      if(path<=0.)discard;
+
+      // A smooth density profile across the deck, integrated with three
+      // heights. Sample the horizontal cloud pattern once per ray so sparse
+      // march points cannot show up as parallel bands on the terrain.
+      vec3 middle=cloudObserver+ray*(start+end)*.5;
+      float startHeight=clamp((length(cloudObserver+start*ray)-cloudBase)/thickness,0.,1.);
+      float endHeight=clamp((length(cloudObserver+end*ray)-cloudBase)/thickness,0.,1.);
+      float midHeight=clamp((length(middle)-cloudBase)/thickness,0.,1.);
+      float verticalDensity=(startHeight*(1.-startHeight)+4.*midHeight*(1.-midHeight)+endHeight*(1.-endHeight))*2./3.;
+      vec3 midRadial=normalize(middle);
+      vec3 p=midRadial*frequency+wind;
+      float footprint=max(length(dFdx(p)),length(dFdy(p)));
+      float field=fbm(p);
+      float threshold=mix(.72,.27,coverage);
+      float density=smoothstep(threshold,threshold+.16,field);
+      density*=1.-smoothstep(.20,1.10,footprint);
+      // At grazing angles the column approximation spans too much weather
+      // to look like individual clouds. Fade into the existing sky haze.
+      density*=smoothstep(.10,.30,abs(dot(ray,midRadial)));
+      float optical=density*verticalDensity*min(path/thickness,2.6);
+      float alpha=(1.-exp(-optical*2.65))*opacity;
+      if(alpha<.008)discard;
+
+      // The mesh is only a proxy; keep the cloud behind foreground objects.
+      // This representative depth stays continuous across the cloud layer.
+      float cloudDepth=start+path*mix(.40,.25,density);
+      float viewDepth=cloudDepth*planetRadius*-(mat3(viewMatrix)*rayWorld).z;
+      #if defined( USE_LOGDEPTHBUF ) && defined( USE_LOGDEPTHBUF_EXT )
+        gl_FragDepthEXT=log2(1.+max(0.,viewDepth))*logDepthBufFC*.5;
+      #else
+        vec4 clip=cloudProjection*vec4(0.,0.,-viewDepth,1.);
+        gl_FragDepthEXT=.5+.5*clip.z/clip.w;
+      #endif
+
+      vec3 radial=normalize(cloudObserver+cloudDepth*ray);
+      float elevation=dot(radial,sunLocal);
+      float day=smoothstep(-horizonDip-.025,.08,elevation);
+      float warm=exp(-pow((elevation+.015)*5.,2.));
+      vec3 light=mix(sunColor,vec3(1.,.39,.12),warm*.72);
+      float topFacing=smoothstep(-.5,.5,-dot(ray,radial));
+      float lit=mix(.53,.98,topFacing)*mix(.85,1.,density);
+      vec3 shade=mix(vec3(.32,.41,.54),vec3(1.),lit);
+      vec3 color=tint*(shade*light*day*pow(irradiance,.25)*eclipse+vec3(.0025,.0035,.006)*(1.-day));
+      gl_FragColor=vec4(color,alpha);
+      #include <tonemapping_fragment>
+      #include <encodings_fragment>
+    }`;
+
   class PlanetarySky{
-    constructor(T,scene){
-      this.T=T;this.scene=scene;this.body=null;this.profile=null;this.layers=[];
-      this.inverse=new T.Quaternion();this.relative=new T.Vector3();this.up=new T.Vector3();this.sun=new T.Vector3();this.sunColor=new T.Color();
+    constructor(T,scene,fragmentDepth=true){
+      this.T=T;this.scene=scene;this.fragmentDepth=fragmentDepth;this.body=null;this.profile=null;this.layers=[];
+      this.inverse=new T.Quaternion();this.rotation=new T.Matrix4();this.relative=new T.Vector3();this.up=new T.Vector3();this.sun=new T.Vector3();this.sunColor=new T.Color();
       this.state={enabled:false,daylight:0,skyFactor:0,starVisibility:1,altitude:0,sunHeight:-1};
       const uniforms={inverseProjection:{value:new T.Matrix4()},cameraBasis:{value:new T.Matrix3()},observer:{value:new T.Vector3(0,1.00001,0)},sunDirection:{value:new T.Vector3(0,1,0)},
         betaR:{value:new T.Vector3()},betaM:{value:new T.Vector3()},betaO:{value:new T.Vector3()},ozoneHeight:{value:.004},ozoneWidth:{value:.0024},sunColor:{value:new T.Color(1,1,1)},hazeTint:{value:new T.Color()},
@@ -155,10 +245,41 @@
         this.geometry=this.geometries.get(segments);
       }
       for(const deck of p.clouds){
-        const material=new T.ShaderMaterial({uniforms:{sunDirection:{value:new T.Vector3()},sunLocal:{value:new T.Vector3()},sunColor:{value:new T.Color()},tint:{value:new T.Color(p.haze>.3?p.tint:0xffffff)},wind:{value:new T.Vector3()},coverage:{value:deck.coverage},opacity:{value:deck.opacity},frequency:{value:deck.scale},horizonDip:{value:Math.sqrt(2*deck.height/(body.r*10))},irradiance:{value:1},eclipse:{value:1}},vertexShader:cloudVertex,fragmentShader:cloudFragment,extensions:{derivatives:true},transparent:true,depthWrite:false,side:T.BackSide,fog:false});
-        const mesh=new T.Mesh(this.geometry,material);mesh.scale.setScalar(body.r+deck.height/10);mesh.frustumCulled=false;mesh.renderOrder=10000-this.layers.length;mesh.userData.deck=deck;this.scene.add(mesh);this.layers.push(mesh);
+        const volume=!!deck.thickness&&this.fragmentDepth;
+        const uniforms={
+          sunDirection:{value:new T.Vector3()},sunLocal:{value:new T.Vector3()},
+          sunColor:{value:new T.Color()},tint:{value:new T.Color(p.haze>.3?p.tint:0xffffff)},
+          wind:{value:new T.Vector3()},coverage:{value:deck.coverage},opacity:{value:deck.opacity},
+          frequency:{value:deck.scale},horizonDip:{value:Math.sqrt(2*deck.height/(body.r*10))},
+          irradiance:{value:1},eclipse:{value:1}
+        };
+        const radius=body.r+deck.height/10;
+        let proxyRadius=radius;
+        if(volume){
+          const half=deck.thickness/20;
+          Object.assign(uniforms,{
+            cloudBase:{value:(radius-half)/body.r},cloudTop:{value:(radius+half)/body.r},
+            cloudObserver:{value:new T.Vector3()},cloudBasis:{value:new T.Matrix3()},
+            cloudProjection:{value:new T.Matrix4()},planetRadius:{value:body.r}
+          });
+          // Inflate the proxy enough to enclose the analytic outer sphere
+          // even between its vertices.
+          const segmentAngle=Math.PI/this.geometry.parameters.heightSegments;
+          proxyRadius=(radius+half)/(Math.cos(segmentAngle)**2);
+        }
+        const material=new T.ShaderMaterial({
+          uniforms,vertexShader:volume?cloudVolumeVertex:cloudVertex,
+          fragmentShader:volume?cloudVolumeFragment:cloudFragment,
+          extensions:{derivatives:true,fragDepth:volume},
+          transparent:true,depthWrite:false,side:T.BackSide,fog:false
+        });
+        const mesh=new T.Mesh(this.geometry,material);
+        mesh.scale.setScalar(proxyRadius);mesh.frustumCulled=false;mesh.renderOrder=10000-this.layers.length;
+        mesh.userData.deck=deck;mesh.userData.volume=volume;
+        this.scene.add(mesh);this.layers.push(mesh);
       }
     }
+
     update(camera,body,observer,star,time,eclipse=1,au=1.496e10){
       this.setBody(body);
       const p=this.profile,s=this.state,T=this.T;
@@ -169,6 +290,7 @@
       const depth=p?p.top/10:1;
       s.enabled=!!p&&s.altitude<depth*1.5;
       const immersion=p?1-smooth(depth*.12,depth*1.25,Math.max(0,s.altitude)):0;
+      s.immersion=immersion;
       s.skyFactor=s.daylight*immersion;
       const nightTransmission=p&&p.haze>.3?Math.exp(-p.haze*18):1;
       s.starVisibility=p?(1-(1-Math.pow(1-s.daylight,3))*immersion)*(1-immersion+nightTransmission*immersion):1;
@@ -178,12 +300,27 @@
       if(g.GodmanBlackbodyRgb)g.GodmanBlackbodyRgb(T,star.temperature||5772,this.sunColor);else this.sunColor.setRGB(1,.96,.9);
       for(const l of this.layers){
         l.visible=!!p&&s.altitude<body.r*10;
-        const side=s.altitude*10<l.userData.deck.height?T.BackSide:T.FrontSide;
-        if(l.material.side!==side){l.material.side=side;l.material.needsUpdate=true;}
+        const {deck,volume}=l.userData;
+        if(!volume){
+          const side=s.altitude*10<deck.height?T.BackSide:T.FrontSide;
+          if(l.material.side!==side){l.material.side=side;l.material.needsUpdate=true;}
+        }
         l.position.copy(body.center).sub(observer);
         if(body.mesh)l.quaternion.copy(body.mesh.quaternion);
         l.rotateY(time*(l.userData.deck.height>5000?.00001:.000003));
-        const u=l.material.uniforms;u.sunDirection.value.copy(this.sun);u.sunLocal.value.copy(this.sun).applyQuaternion(this.inverse.copy(l.quaternion).invert());u.sunColor.value.copy(this.sunColor);u.irradiance.value=irradiance;u.eclipse.value=eclipse;
+        const u=l.material.uniforms;
+        this.inverse.copy(l.quaternion).invert();
+        u.sunDirection.value.copy(this.sun);u.sunLocal.value.copy(this.sun).applyQuaternion(this.inverse);
+        u.sunColor.value.copy(this.sunColor);u.irradiance.value=irradiance;u.eclipse.value=eclipse;
+        if(volume){
+          u.cloudBasis.value.setFromMatrix4(this.rotation.makeRotationFromQuaternion(this.inverse));
+          u.cloudObserver.value.copy(this.relative).applyQuaternion(this.inverse).divideScalar(body.r);
+          u.cloudProjection.value.copy(camera.projectionMatrix);
+        }else if(deck.thickness){
+          // Devices without programmable depth still get a soft crossing.
+          const distance=Math.abs(s.altitude*10-deck.height);
+          u.opacity.value=deck.opacity*smooth(0,deck.thickness*.5,distance);
+        }
         u.wind.value.set(time*.00012,0,time*.00005);
       }
       if(!s.enabled)return s;

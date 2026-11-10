@@ -23,7 +23,7 @@ assert.equal(sky.material.depthFunc,T.LessEqualDepth,'Far-depth sky must pass on
 assert.ok(sky.geometry.index.count<(512*255*6)*.26,'Earth clouds retained oversized geometry');
 for(const layer of sky.layers){
   assert.ok(layer.material.depthTest&&!layer.material.depthWrite,'Clouds must respect foreground depth');
-  assert.equal(layer.material.side,T.BackSide,'Ground observers must see cloud undersides only');
+  assert.equal(layer.material.side,T.BackSide,'Earth cloud proxy should use a single face throughout the crossing');
   for(const key of ['irradiance','eclipse','sunDirection','sunLocal','sunColor','horizonDip'])assert.ok(layer.material.uniforms[key],`Missing cloud uniform ${key}`);
   // A coarse planet mesh can dip below its own surface between vertices,
   // causing the cloud deck to disappear from ground level.
@@ -58,15 +58,54 @@ for(const [name,r] of [['Earth',637100],['Jupiter',6991100],['Saturn',5823200],[
     assert.ok(sag<layer.userData.deck.height/10,`${name} optimized cloud shell intersects ground`);
   }
 }
+update(earth);
+for(const layer of sky.layers){
+ const u=layer.material.uniforms,deck=layer.userData.deck;
+ assert.ok(layer.userData.volume&&layer.material.extensions.fragDepth,'Earth clouds lack a depth-tested volume');
+ assert.ok((u.cloudTop.value-u.cloudBase.value)*earth.r*10>1000,'Earth cloud collapsed into a sheet');
+ for(const offset of [-deck.thickness,-1,0,1,deck.thickness]){
+  observer.y=(deck.height+offset)/10-camera.position.y;
+  update(earth);
+  assert.equal(layer.material.side,T.BackSide,'Earth cloud proxy switched faces during descent');
+  assert.equal(u.opacity.value,deck.opacity,'Earth cloud volume pops at the deck center');
+  assert.ok(Math.abs(u.cloudObserver.value.length()-1-(deck.height+offset)/10/earth.r)<1e-10,'Cloud volume uses the wrong camera altitude');
+ }
+}
+observer.set(0,0,0);
+const fallback=new GodmanPlanetarySky(T,new T.Scene(),false);
+observer.y=GodmanSkyProfiles.Earth.clouds[0].height/10-camera.position.y;
+fallback.update(camera,earth,observer,star,0);
+assert.equal(fallback.layers[0].material.uniforms.opacity.value,0,'Legacy cloud shell does not fade at its face transition');
+fallback.dispose();observer.set(0,0,0);
 update(earth);assert.equal(sky.geometry,earthGeometry,'Returning to Earth allocated duplicate cloud geometry');
 const reused={name:'Moon',r:173700,center:new T.Vector3(0,-173700,0)};update(reused);reused.name='Earth';reused.r=637100;reused.center.y=-637100;assert.ok(update(reused).enabled&&sky.layers.length===2,'Reused streamed body retained its old sky');
 observer.set(0,30000,0);state=update(earth);assert.ok(!state.enabled&&state.starVisibility>.99,'Atmosphere did not give way to space');
-assert.ok(sky.layers.every(l=>l.material.side===T.FrontSide),'Orbital cloud shells rendered their far-side faces');
+assert.ok(sky.layers.every(l=>l.userData.volume&&l.material.side===T.BackSide),'Orbital Earth switched back to thin shells');
 observer.set(0,0,0);state=sky.update(camera,earth,observer,star,0,0);assert.equal(state.skyFactor,0,'Eclipse failed to darken the sky');
 const fog=new GodmanSurfaceAtmosphere(T,scene,{surfaceFogDensity:.00016,mountainFogDensity:.00029,fadeAltitudeRatio:.018});
 fog.update({enabled:true,altitude:480,bodyRadius:637100,fadeHeight:480,skyFactor:1,daylight:1,atmosphereColor:0x6db3ff});assert.equal(fog.fog.density,0,'Surface haze remained opaque above its layer');
+// C moves only the camera. Earth remains directly below the astronaut.
+star.center.set(0,1.496e10,0);
+camera.position.set(0,2,0);
+assert.ok(update(earth).starVisibility<.001);
+camera.position.set(0,earth.r*12,0);
+state=update(earth);
+assert.equal(state.starVisibility,1,'Overview inherited daylight extinction from the player');
+assert.equal(state.immersion,0,'Overview suppressed the orbital atmosphere rim');
+assert.ok(!state.enabled&&sky.layers.every(layer=>!layer.visible),'Overview rendered near-surface sky layers');
 const lights={key:new T.DirectionalLight(),ambient:new T.AmbientLight(),sky:new T.HemisphereLight(),rim:new T.DirectionalLight(),headlamp:new T.PointLight()};
 const lighting=new GodmanPhysicalLighting(T,{toneMappingExposure:1},{baseExposure:.82,minExposure:.38,maxExposure:1.32,maxRelativeIrradiance:18},lights);
 lighting.update({dt:.016,distance:1,au:1,skyFactor:0,nearAtmosphere:0,surface:true,directDay:0,sunHeight:-1});assert.equal(lights.key.intensity,0,'Sunlight shone through an airless planet at night');
+const twilight=GodmanPhysicalLighting.earthTwilight;
+assert.equal(twilight(-.02),1);
+assert.equal(twilight(-.25),0);
+assert.equal(twilight(.5),0);
+const sunset={dt:.016,distance:1,au:1,skyFactor:.32,nearAtmosphere:1,surface:true,directDay:.2,sunHeight:-.02,skyTint:0x72aaff};
+lighting.update({...sunset,twilight:twilight(sunset.sunHeight)});
+assert.ok(lights.sky.color.r>lights.sky.color.b,'Sunset ground fill stayed blue');
+lighting.update({...sunset,sunHeight:.5,skyFactor:1,twilight:twilight(.5)});
+assert.ok(lights.sky.color.b>lights.sky.color.r,'Earth daylight inherited the sunset tint');
+fog.update({enabled:true,altitude:0,bodyRadius:637100,fadeHeight:480,skyFactor:.32,daylight:.4,atmosphereColor:0x72aaff,twilight:1});
+assert.ok(fog.fog.color.r>fog.fog.color.b,'Twilight haze tinted distant terrain blue');
 sky.dispose();assert.equal(scene.children.filter(c=>c===sky.mesh).length,0);
 console.log('PASS: daylight/twilight/night, airless and hazy worlds, eclipse, altitude-to-space transition, cloud geometry/depth/uniforms, extreme camera range, surface haze and airless night lighting.');

@@ -1,6 +1,71 @@
 /* Continuous height-field lighting and exact edges between terrain LODs. */
 (function(g){
   'use strict';
+  function coveredCapCos(latitude, longitudeSpan, south, north, margin){
+    // The meridian edge is closer than its longitude offset, especially
+    // near the poles. Limit the cap to the complete streamed rectangle.
+    const eastWest=Math.asin(Math.cos(latitude)*Math.sin(Math.min(Math.PI*.5,longitudeSpan)));
+    const southEdge=south<=-Math.PI*.5?Infinity:latitude-south;
+    const northEdge=north>=Math.PI*.5?Infinity:north-latitude;
+    const radius=Math.min(eastWest,southEdge,northEdge)-margin;
+    return radius>0?Math.cos(radius):2;
+  }
+  function smoothHeight(before,a,b,after,t){
+    // A shared, monotone tangent at every sample preserves the source
+    // heights and removes the lighting crease at the raster cell boundary.
+    const delta=b-a;
+    if(delta===0)return a;
+    const left=a-before,right=after-b;
+    const start=left*delta>0?2*left*delta/(left+delta):0;
+    const end=delta*right>0?2*delta*right/(delta+right):0;
+    return a+t*(start+t*(3*delta-2*start-end+t*(start+end-2*delta)));
+  }
+  function sampleHeight(data,width,height,x,y,wrapLongitude){
+    const column=Math.floor(x),row=Math.floor(y),u=x-column,v=y-row;
+    const limit=width-1;
+    let a,b,c,d;
+    if(wrapLongitude){
+      b=column%width;a=(b+limit)%width;c=(b+1)%width;d=(b+2)%width;
+    }else{
+      b=column;a=Math.max(0,b-1);c=Math.min(limit,b+1);d=Math.min(limit,b+2);
+    }
+    const r0=Math.max(0,row-1)*width,r1=row*width;
+    const r2=Math.min(height-1,row+1)*width,r3=Math.min(height-1,row+2)*width;
+    return smoothHeight(
+      smoothHeight(data[r0+a],data[r0+b],data[r0+c],data[r0+d],u),
+      smoothHeight(data[r1+a],data[r1+b],data[r1+c],data[r1+d],u),
+      smoothHeight(data[r2+a],data[r2+b],data[r2+c],data[r2+d],u),
+      smoothHeight(data[r3+a],data[r3+b],data[r3+c],data[r3+d],u),v
+    );
+  }
+  function globeSections(T,globe,cellSize){
+    const {widthSegments:width,heightSegments:height}=globe.parameters;
+    const stride=width+1,position=globe.attributes.position,indices=globe.index.array;
+    const sections=[],point=new T.Vector3(),direction=new T.Vector3(),bounds=new T.Box3();
+    let end=0;
+    for(let y=0;y<height;y+=cellSize)for(let x=0;x<width;x+=cellSize){
+      const right=Math.min(width,x+cellSize),bottom=Math.min(height,y+cellSize),start=end;
+      const center=new T.Vector3().fromBufferAttribute(position,((y+bottom)>>1)*stride+((x+right)>>1)).normalize();
+      let minDot=1;
+      bounds.makeEmpty();
+      for(let j=y;j<=bottom;j++)for(let i=x;i<=right;i++){
+        point.fromBufferAttribute(position,j*stride+i);
+        bounds.expandByPoint(point);
+        minDot=Math.min(minDot,center.dot(direction.copy(point).normalize()));
+      }
+      for(let j=y;j<bottom;j++)for(let i=x;i<right;i++){
+        const b=j*stride+i,a=b+1,c=b+stride,d=c+1;
+        if(j>0){indices[end++]=a;indices[end++]=b;indices[end++]=d;}
+        if(j<height-1){indices[end++]=b;indices[end++]=c;indices[end++]=d;}
+      }
+      const geometry=new T.BufferGeometry();
+      for(const [name,attribute] of Object.entries(globe.attributes))geometry.setAttribute(name,attribute);
+      geometry.setIndex(new T.BufferAttribute(indices.subarray(start,end),1));
+      geometry.boundingSphere=bounds.getBoundingSphere(new T.Sphere());
+      sections.push({geometry,center,angularRadius:Math.acos(Math.max(-1,minDot))});
+    }
+    return sections;
+  }
   class TerrainSurface{
     constructor(T,radius,sampleRadius){
       this.T=T;this.radius=radius;this.sampleRadius=sampleRadius;
@@ -26,7 +91,7 @@
       if(tile.stitchKey===key&&!force)return;
       tile.stitchKey=key;tile.stitchSteps=steps.slice();
       if(steps.every(step=>step===1)&&!tile.surfaceBase){this.refreshSkirt(tile);return;}
-      const names=['position','normal','color','earthMeltStrength','earthMeltBirth'];
+      const names=['position','normal','color','earthGround','earthMeltStrength','earthMeltBirth'];
       const base=tile.surfaceBase||(tile.surfaceBase={});
       for(const name of names){
         const attr=geo.attributes[name];
@@ -78,6 +143,8 @@
         for(const k of [dst,dst+1]){
           skirt.normal.setXYZ(k,n.getX(i),n.getY(i),n.getZ(i));
           skirt.color.setXYZ(k,c.getX(i),c.getY(i),c.getZ(i));
+          const ground=surface.earthGround;
+          skirt.earthGround.setXYZW(k,ground.getX(i),ground.getY(i),ground.getZ(i),ground.getW(i));
           skirt.earthMeltStrength.setX(k,surface.earthMeltStrength.getX(i));
           skirt.earthMeltBirth.setX(k,surface.earthMeltBirth.getX(i));
         }
@@ -86,5 +153,8 @@
       tile.skirtMesh.geometry.computeBoundingSphere();
     }
   }
+  TerrainSurface.coveredCapCos=coveredCapCos;
+  TerrainSurface.sampleHeight=sampleHeight;
+  TerrainSurface.globeSections=globeSections;
   g.GodmanTerrainSurface=TerrainSurface;
 })(typeof window==='undefined'?globalThis:window);

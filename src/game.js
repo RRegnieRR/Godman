@@ -10,16 +10,11 @@
   const loadBar = document.getElementById('loadBar');
   const loadText = document.getElementById('loadText');
   const loadStart = Date.now();
-  let loadTotal = 999, loadDone = 0, loaderHidden = false;
-  function loadTick(label) {
-    loadDone++;
-    if (label) loadText.textContent = label;
-    loadBar.style.width = Math.min(100, loadDone / loadTotal * 100) + '%';
-    if (loadDone >= loadTotal) hideLoader();
-  }
+  let loaderHidden = false;
   function hideLoader() {
     if (loaderHidden) return;
     loaderHidden = true;
+    loadBar.style.width = '100%';
     const wait = Math.max(0, 1000 - (Date.now() - loadStart));
     setTimeout(() => {
       loaderEl.style.opacity = 0;
@@ -51,7 +46,7 @@
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.dithering = true;
-  const planetarySky=new window.GodmanPlanetarySky(THREE,scene);
+  const planetarySky=new window.GodmanPlanetarySky(THREE,scene,renderer.capabilities.isWebGL2||renderer.extensions.has('EXT_frag_depth'));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
@@ -71,8 +66,8 @@
   });
 
   const renderObjs = [];
-  const reliefQueue = [];
   const reliefNormalCache = new WeakMap();
+  let pendingRelief=null;
   const labels = [];
   const glows = [];
   const orbitGuides = [];
@@ -376,7 +371,7 @@
     'gl_Position = projectionMatrix * viewMatrix * vec4(vPosW,1.0);\n' +
     '#include <logdepthbuf_vertex>\n}';
   const atmoFrag = '#include <common>\n#include <logdepthbuf_pars_fragment>\n' +
-    'uniform vec3 glowColor; uniform vec3 sunDirection; uniform float fade; uniform float starVisibility; varying vec3 vNormal; varying vec3 vPosW;\n' +
+    'uniform vec3 glowColor; uniform vec3 sunDirection; uniform float fade; uniform float starVisibility; uniform float limbCos; varying vec3 vNormal; varying vec3 vPosW;\n' +
     'void main(){\n#include <logdepthbuf_fragment>\n' +
     'vec3 viewDir = normalize(cameraPosition - vPosW);\n' +
     'vec3 n = normalize(vNormal);\n' +
@@ -394,18 +389,23 @@
     'vec3 aerosol = vec3(1.0,0.62,0.28) * miePhase * 0.055 * day;\n' +
     'vec3 warm = vec3(1.0,0.16,0.025) * sunset * opticalDepth * 0.22;\n' +
     'vec3 color = (rayleigh + aerosol + warm) * (0.08 + 0.92 * starVisibility);\n' +
-    'float alpha = horizon * clamp(opticalDepth*.48,0.0,1.0) * (0.08 + 0.92*day) * fade;\n' +
-    'gl_FragColor = vec4(color, alpha); }';
-  function atmoMaterial(colorHex) {
+    // Blend scattered light over the already drawn stars. The short path at
+    // the outer tangent fades out smoothly, while the bright rim hides stars.
+    'float glow = horizon * clamp(opticalDepth*.48,0.0,1.0) * (0.08 + 0.92*day) * fade;\n' +
+    'float edge = smoothstep(0.0, limbCos*.38, mu);\n' +
+    'float alpha = (1.0-exp(-5.0*glow)) * edge;\n' +
+    'gl_FragColor = vec4(color * glow * edge / max(alpha,.0001), alpha); }';
+  function atmoMaterial(colorHex, surfaceRatio) {
     return new THREE.ShaderMaterial({
       uniforms: {
         glowColor: { value: new THREE.Color(colorHex) },
         sunDirection: { value: new THREE.Vector3(1, 0, 0) },
         fade: { value: 1 },
-        starVisibility: { value: 1 }
+        starVisibility: { value: 1 },
+        limbCos: { value: Math.sqrt(1-surfaceRatio*surfaceRatio) }
       },
       vertexShader: atmoVert, fragmentShader: atmoFrag,
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide
+      transparent: true, blending: THREE.NormalBlending, depthTest: true, depthWrite: false, side: THREE.FrontSide
     });
   }
 
@@ -462,7 +462,7 @@
         roughness: o.hasOcean ? 0.58 : (o.bump === false ? 0.82 : 0.9),
         metalness: 0
       });
-      if (o.bump !== false) reliefQueue.push(o); // relief computed in the background
+      o.reliefPending=o.bump!==false;
     }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = !o.emissive;
@@ -478,10 +478,11 @@
     o.soi = o.soiMult ? o.r * o.soiMult : o.r * 7;
 
     if (o.atmosphere) {
-      o.atmoMat = atmoMaterial(o.atmosphere);
       const skyProfile=window.GodmanSkyProfile(o);
       const atmosphereRadius=o.r+(skyProfile?skyProfile.top/10:o.r*.045);
+      o.atmoMat = atmoMaterial(o.atmosphere, o.r/atmosphereRadius);
       const atm = new THREE.Mesh(new THREE.SphereGeometry(atmosphereRadius, 64, 40), o.atmoMat);
+      atm.renderOrder=50; // After the stellar background, before local cloud volumes.
       track(atm, o.center);
       o.atmoMesh = atm;
     }
@@ -712,14 +713,6 @@
   addOrbitLine(peg51.center, 0.0527 * AU, 2);
   addPlanet({ name: '51 Pegasi b', r: 1.27 * 6.9911e6, g: 22, center: orbitPos(peg51.center, 0.0527 * AU, 200, 2),
     tex: banded(['#e8b870', '#c89048', '#f8d8a0', '#a87030', '#ffc880'], null), tilt: 0.1, bump: false });
-
-  // Earth glows with city lights on the night side (built in the background)
-  setTimeout(() => {
-    try {
-      installEarthNight(nightLights(earth.tex.image));
-    } catch (e) {}
-    loadTick('Lighting the cities of Earth...');
-  }, 600);
 
   // ===== REAL MOTION: true rotation & orbital periods, time compressed =====
   const TIME_SCALE = 100;           // 1 real second = 100 simulated seconds
@@ -1145,11 +1138,13 @@
   // These are true 3D volumes and point distributions at real sky positions
   // and distances. No photographic nebula textures or camera-facing cards.
   const deepSkyRenderer=new window.GodmanDeepSkyRenderer(THREE),deepSkyObjects=[];
-  let deepSkyVisibility=0;
+  const deepSkyViewport=new THREE.Vector2();
+  const milkyWayCredit=document.getElementById('milkyWayCredit');
+  let deepSkyVisibility=0,previousOverview=false;
   // A single GPU batch supplies a sparse extragalactic background. It follows
   // the observer position, so deep space continues naturally without a visible
   // rectangular wall or a reachable end-of-universe shell.
-  const cosmicBackdrop=deepSkyRenderer.createCosmicBackdrop({count:900000,radius:5e22,seed:0x5a17c9e3});
+  const cosmicBackdrop=deepSkyRenderer.createCosmicBackdrop({count:145000,radius:5e22,seed:0x5a17c9e3});
   scene.add(cosmicBackdrop);
   function deepSkyPosition(raDeg,decDeg,distanceLy){
     const ra=raDeg*Math.PI/180,dec=decDeg*Math.PI/180;
@@ -1198,23 +1193,17 @@
   // disk normal. This fixes the bar's observed angle relative to the Sun.
   const milkySide=new THREE.Vector3().crossVectors(milkyToSun,milkyNormal).normalize();
   const milkyQuaternion=new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(milkyToSun,milkyNormal,milkySide));
-  // The former transparent galactic-veil sphere was divided into visible
-  // low-poly facets at extreme distance. Those facets were the large squares
-  // seen at the apparent universe boundary. The Milky Way is now composed
-  // entirely of independent stellar points, with no far-distance surface or
-  // mesh capable of drawing rectangular patches behind them.
-  // Do not wrap the observer in a separate Milky Way sky shell. Even with a
-  // camera-aware fade, that finite overlay could reveal dense patches during
-  // extreme C-view zoom. The navigable physical galaxy below and the uniform
-  // camera-centred cosmic backdrop now provide the entire stellar sky.
+  // The navigable galaxy keeps its catalogue positions. Its faint disk
+  // light is integrated along each view ray in galactic space.
   const MILKY_SAMPLE_COUNT=12000000;
   const milkyWay=deepSkyRenderer.createGalaxy({
     name:'Milky Way Galaxy',aliases:['Milky Way','our galaxy','home galaxy'],center:blackhole.center.clone(),
     distanceLy:26670,radius:52000*LYS,bodyType:'BARRED SPIRAL GALAXY',count:MILKY_SAMPLE_COUNT,
-    initialCount:120000,residentCount:1350000,capacityLimit:2600000,estimatedStars:200000000000,planetsPerStar:5.5,homeGalaxy:true,
+    initialCount:120000,estimatedStars:200000000000,planetsPerStar:5.5,homeGalaxy:true,
     arms:4,twist:6.15,thickness:.012,ellipticity:1,bulgeFraction:.14,bulgeHeight:.34,barStrength:.9,seed:1001,
     haloFraction:.03,barLength:.314,barAngle:29*Math.PI/180,diskScale:.15,thinScaleHeight:.0176,thickScaleHeight:.0535,
-    quaternion:milkyQuaternion,core:0xe58d43,arm:0x5f8fe0,dust:0x351b22,source:'NASA / ESA estimate'
+    quaternion:milkyQuaternion,core:0xd7ac7c,arm:0x869bbf,dust:0x351b22,brightness:.36,
+    panoramaUrl:'assets/sky/milky-way-eso.webp',source:'NASA / ESA estimate'
   },track);
   deepSkyObjects.push(milkyWay);
 
@@ -1418,12 +1407,14 @@
       x=Math.cos(az)*sy*radial*(1-mix)+bx*mix;y=cy*.34*radial*(1-mix)+by*mix;z=Math.sin(az)*sy*radial*(1-mix)+bz*mix;
     }else{
       const lane=Math.floor(h(4.8)*4),localArm=h(421)>=.935;
-      let diffuse=smooth(.69,.985,h(61));
       radial=-Math.log(Math.max(1e-5,h(2.1)*h(3.7)))*.15;
       if(h(503)>=.86)radial=.38+Math.pow(h(509),.78)*.77;
       radial=Math.min(radial,1.18);
       const pitches=[.2234,.2025,.2356,.1885],phases=[.17,1.71,3.34,4.92];
-      let armTheta=phases[lane]-Math.log(Math.max(.055,radial)/.5)/Math.tan(pitches[lane])+bell(8)*(.018+.022/Math.max(.13,radial));
+      const phase=phases[lane];
+      let armTheta=phase-Math.log(Math.max(.055,radial)/.5)/Math.tan(pitches[lane])+bell(8)*(.055+.040/Math.max(.13,radial));
+      armTheta+=.12*Math.sin(radial*22+phase)+.065*Math.sin(radial*47-phase);
+      let diffuse=h(61)>=.46+.13*smooth(.13,.30,radial)?1:0;
       if(localArm){radial=.385+Math.pow(h(427),.82)*.285;armTheta=-Math.log(radial/.513)/Math.tan(.2025)+bell(433)*.045;diffuse=0;}
       const theta=armTheta*(1-diffuse)+(h(67)*Math.PI*2)*diffuse;
       const thick=h(193)>=.875,scale=thick?.0535:.0176;
@@ -1570,10 +1561,9 @@
           }else p.mesh.material.map = t;
           if (!p.emissive) {
             if (!p._realNormal && p !== earth) {
-              try {
-                p.mesh.material.normalMap = normalFromCanvas(c, 2.2);
-                p.mesh.material.bumpMap = null;
-              } catch (e2) {}
+              p.reliefPending=true;
+              p.mesh.material.normalMap=null;
+              if(p.bump!==false)p.mesh.material.bumpMap=t;
             }
             if (p === earth) {
               try { installEarthNight(nightLights(c)); } catch (e2) {}
@@ -1587,6 +1577,8 @@
       if (!img._retried && /^https?:/.test(url)) {
         img._retried = true;
         img.src = 'https://images.weserv.nl/?url=' + encodeURIComponent(url.replace('https://', ''));
+      } else if (!kind && p===earth && !earth.nightMesh) {
+        installEarthNight(nightLights(earth.tex.image));
       }
     };
     img.src = url;
@@ -1613,11 +1605,11 @@
     data:null,w:4096,h:2048,segW:1280,segH:640,grid:null,
     rugged:null,ruggedW:1024,ruggedH:512,ready:false
   };
-  const earthSurfaceCutaway={center:{value:new THREE.Vector3(0,1,0)},cosRadius:{value:2}};
+  const earthSurfaceCutaway={center:{value:new THREE.Vector3(0,1,0)},cosRadius:{value:2},orbitalCosRadius:{value:2},detail:{value:1}};
   earth.mesh.material.onBeforeCompile=shader=>{
     shader.uniforms.earthSurfaceCenter=earthTileCenterWorld;
     shader.uniforms.earthTileRenderCenter=earthTileRenderCenter;
-    shader.uniforms.earthSurfaceCosRadius=earthSurfaceCutaway.cosRadius;
+    shader.uniforms.earthSurfaceCosRadius=earthSurfaceCutaway.orbitalCosRadius;
     shader.vertexShader=shader.vertexShader
       .replace('#include <common>','#include <common>\nvarying vec3 vEarthLocalDir;\nuniform vec3 earthTileRenderCenter;')
       .replace('#include <begin_vertex>','#include <begin_vertex>\nvEarthLocalDir=normalize((modelMatrix*vec4(position,1.0)).xyz-earthTileRenderCenter);');
@@ -1641,19 +1633,35 @@
     s.peakLocal=V3(-Math.cos(lo)*cl,Math.sin(la),Math.sin(lo)*cl).normalize();
     const blo=(s.baseLon+180)/360*Math.PI*2,bla=s.baseLat*Math.PI/180,bcl=Math.cos(bla);
     s.baseLocal=V3(-Math.cos(blo)*bcl,Math.sin(bla),Math.sin(blo)*bcl).normalize();
-    s.spanLat=3.6;s.spanLon=3.6/Math.max(.2,Math.cos(bla));s.regionCos=Math.cos(20000/earth.r*.98);s.data=null;s.summitLift=0;
+    s.spanLat=3.6;s.spanLon=3.6/Math.max(.2,Math.cos(bla));
+    s.regionCos=Math.cos(19600/earth.r);s.regionInnerCos=Math.cos(16500/earth.r);
+    s.data=null;s.summitLift=0;
   }
   const earthMountainPatches=[];
+  const earthGlobe={detail:null,orbit:null,sections:[],maxRadius:0,view:new THREE.Vector3(),inverse:new THREE.Quaternion()};
+  const earthDetailRoot=new THREE.Group();
+  earth.mesh.add(earthDetailRoot);
   const elevationLocalN=new THREE.Vector3(),elevationQ=new THREE.Quaternion();
+  const sampleHeight=window.GodmanTerrainSurface.sampleHeight;
+  function elevationPixels(image,width,height){
+    const canvas=document.createElement('canvas');
+    canvas.width=width;canvas.height=height;
+    const ctx=canvas.getContext('2d');
+    ctx.drawImage(image,0,0,width,height);
+    const rgba=ctx.getImageData(0,0,width,height).data;
+    const heights=new Uint8Array(width*height);
+    for(let i=0;i<heights.length;i++)heights[i]=rgba[i*4];
+    return heights;
+  }
   function sampleEarthElevationBaseRaster(n){
     if(!earthElevation.data)return 0;
     const theta=Math.acos(Math.max(-1,Math.min(1,n.y)));
     let phi=Math.atan2(n.z,-n.x);if(phi<0)phi+=Math.PI*2;
-    const fx=phi/(Math.PI*2)*earthElevation.w,fy=theta/Math.PI*(earthElevation.h-1);
-    const x0=Math.floor(fx)%earthElevation.w,x1=(x0+1)%earthElevation.w,y0=Math.floor(fy),y1=Math.min(earthElevation.h-1,y0+1);
-    const tx=fx-Math.floor(fx),ty=fy-y0,d=earthElevation.data,w=earthElevation.w;
-    const a=d[(y0*w+x0)*4],b=d[(y0*w+x1)*4],c=d[(y1*w+x0)*4],e=d[(y1*w+x1)*4];
-    return ((a*(1-tx)+b*tx)*(1-ty)+(c*(1-tx)+e*tx)*ty)/255*EARTH_ELEVATION_MAX;
+    return sampleEarthElevationUV(phi/(Math.PI*2),theta/Math.PI);
+  }
+  function sampleEarthElevationUV(u,v){
+    const {data,w,h}=earthElevation;
+    return sampleHeight(data,w,h,u*w,v*(h-1),true)*EARTH_ELEVATION_MAX/255;
   }
   function sampleEarthRuggednessLocal(n){
     if(!earthElevation.rugged)return 0;
@@ -1665,21 +1673,22 @@
     const d=earthElevation.rugged,w=earthElevation.ruggedW;
     return (d[y0*w+x0]*(1-tx)+d[y0*w+x1]*tx)*(1-ty)+(d[y1*w+x0]*(1-tx)+d[y1*w+x1]*tx)*ty;
   }
-  function sampleMountainRegionBase(s,n){
-    if(!s.data)return sampleEarthElevationBaseRaster(n);
+  function sampleMountainRegionBase(s,n,fallback=sampleEarthElevationBaseRaster(n)){
+    if(!s.data)return fallback;
     const lat=Math.asin(Math.max(-1,Math.min(1,n.y)))*180/Math.PI;
     let a=Math.atan2(n.z,-n.x);if(a<0)a+=Math.PI*2;
     const lon=a*180/Math.PI-180;
     let dl=lon-s.mapLon;if(dl>180)dl-=360;if(dl<-180)dl+=360;
     const u=.5+dl/s.spanLon,v=.5-(lat-s.mapLat)/s.spanLat;
-    if(u<0||u>1||v<0||v>1)return sampleEarthElevationBaseRaster(n);
-    const fx=u*255,fy=v*255,x0=Math.floor(fx),y0=Math.floor(fy),x1=Math.min(255,x0+1),y1=Math.min(255,y0+1),tx=fx-x0,ty=fy-y0,d=s.data;
-    const a0=d[(y0*256+x0)*4],b=d[(y0*256+x1)*4],c=d[(y1*256+x0)*4],e=d[(y1*256+x1)*4];
-    return ((a0*(1-tx)+b*tx)*(1-ty)+(c*(1-tx)+e*tx)*ty)/255*EARTH_ELEVATION_MAX;
+    const edge=Math.min(u,1-u,v,1-v);
+    if(edge<=0)return fallback;
+    const regionWeight=THREE.MathUtils.smoothstep(n.dot(s.baseLocal),s.regionCos,s.regionInnerCos)*
+      THREE.MathUtils.smoothstep(edge,0,.065);
+    const regional=sampleHeight(s.data,256,256,u*255,v*255,false)*EARTH_ELEVATION_MAX/255;
+    return THREE.MathUtils.lerp(fallback,regional,regionWeight);
   }
-  function sampleEarthElevationRaster(n){
-    let elevation=sampleEarthElevationBaseRaster(n);
-    for(const s of EARTH_MOUNTAIN_SITES)if(s.data&&n.dot(s.baseLocal)>s.regionCos){elevation=sampleMountainRegionBase(s,n);break;}
+  function sampleEarthElevationRaster(n,elevation=sampleEarthElevationBaseRaster(n)){
+    for(const s of EARTH_MOUNTAIN_SITES)if(s.data&&n.dot(s.baseLocal)>s.regionCos){elevation=sampleMountainRegionBase(s,n,elevation);break;}
     // The source raster is capped at 6400 m. Restore the surveyed summit
     // height only inside each summit's real, kilometre-scale footprint.
     for(const s of EARTH_MOUNTAIN_SITES){
@@ -1706,20 +1715,39 @@
     elevationLocalN.copy(nWorld).applyQuaternion(elevationQ).normalize();
     return sampleEarthElevationLocal(elevationLocalN);
   }
-  function buildStableEarthMountains(){
-    const geo=new THREE.SphereGeometry(earth.r,earthElevation.segW,earthElevation.segH),a=geo.attributes.position;
-    for(let i=0;i<a.count;i++){
-      elevationLocalN.set(a.getX(i),a.getY(i),a.getZ(i)).normalize();
-      const rr=earth.r+earthElevation.grid[i];
-      a.setXYZ(i,elevationLocalN.x*rr,elevationLocalN.y*rr,elevationLocalN.z*rr);
+  const earthSurfaceEmission=0x0b0b0b,earthSurfaceEmissionIntensity=.13;
+  function makeEarthGlobe(step){
+    const {segW,segH,grid}=earthElevation;
+    const width=segW/step,height=segH/step;
+    const geo=new THREE.SphereGeometry(earth.r,width,height),a=geo.attributes.position;
+    for(let y=0;y<=height;y++)for(let x=0;x<=width;x++){
+      const i=y*(width+1)+x;
+      const rr=earth.r+grid[y*step*(segW+1)+x*step];
+      const scale=rr/Math.hypot(a.getX(i),a.getY(i),a.getZ(i));
+      a.setXYZ(i,a.getX(i)*scale,a.getY(i)*scale,a.getZ(i)*scale);
+      earthGlobe.maxRadius=Math.max(earthGlobe.maxRadius,rr);
     }
-    a.needsUpdate=true;geo.computeVertexNormals();geo.computeBoundingSphere();
-    earth._baseTerrainPositions=new Float32Array(a.array);
+    geo.computeVertexNormals();geo.computeBoundingSphere();
+    return geo;
+  }
+  function buildStableEarthMountains(){
+    const geo=makeEarthGlobe(1);
+    earthGlobe.detail=geo;
+    earthGlobe.orbit=makeEarthGlobe(5);
+    earthGlobe.sections=window.GodmanTerrainSurface.globeSections(THREE,geo,64);
+    for(const section of earthGlobe.sections){
+      section.mesh=new THREE.Mesh(section.geometry,earth.mesh.material);
+      section.mesh.matrixAutoUpdate=false;
+      section.mesh.visible=false;
+      earth.mesh.add(section.mesh);
+    }
     earth.mesh.geometry.dispose();earth.mesh.geometry=geo;
+    earth._baseTerrainPositions=null;
+    earth.reliefPending=false;
     earth.mesh.material.bumpMap=null;
     earth.mesh.material.normalMap=null;
-    earth.mesh.material.emissive.setHex(0x07101b);
-    earth.mesh.material.emissiveIntensity=.3;
+    earth.mesh.material.emissive.setHex(earthSurfaceEmission);
+    earth.mesh.material.emissiveIntensity=earthSurfaceEmissionIntensity;
     earth.mesh.material.needsUpdate=true;
     if(earth.craters&&earth.craters.length){
       for(const cr of earth.craters){cr._earthVertexIndices=null;cr._earthVertexRadius=0;reapplyCraters(earth,cr);}
@@ -1729,6 +1757,32 @@
     // normal PBR lighting, but does not cast onto or receive from that map.
     earth.mesh.castShadow=false;
     earth.mesh.receiveShadow=false;
+  }
+  function updateEarthGlobe(cameraWorld){
+    if(!earthGlobe.detail||!earth.mesh.visible)return;
+    const radial=earthGlobe.view.copy(cameraWorld).sub(earth.center),distance=radial.length();
+    // Preserve the full mesh for deformed worlds. At planetary scale, the
+    // reduced sphere still samples the same elevation data and texture.
+    const deformed=!!earth.craters?.length;
+    const useOrbit=!deformed&&distance>earth.r*2.2;
+    const useSections=!deformed&&!useOrbit;
+    earth.mesh.geometry=useOrbit?earthGlobe.orbit:earthGlobe.detail;
+    if(useSections)earth.mesh.layers.disable(0);
+    else earth.mesh.layers.enable(0);
+    let horizon=0;
+    if(useSections){
+      // The occluding sphere sits below the rendered triangles. Include the
+      // highest visible terrain beyond that reference sphere's horizon.
+      const innerRadius=earth.r-12;
+      horizon=Math.acos(Math.min(1,innerRadius/Math.max(1,distance)))+
+        Math.acos(innerRadius/earthGlobe.maxRadius);
+      radial.normalize().applyQuaternion(earthGlobe.inverse.copy(earth.mesh.quaternion).invert());
+    }
+    for(const section of earthGlobe.sections){
+      section.mesh.visible=useSections&&section.center.dot(radial)>=Math.cos(horizon+section.angularRadius);
+    }
+    earthDetailRoot.visible=earthSurfaceCutaway.cosRadius.value<=1&&!useOrbit;
+    if(useOrbit)earthSurfaceCutaway.orbitalCosRadius.value=2;
   }
   function buildPermanentMountainPatches(){
     const R=20000,S=160,N=S+1;
@@ -1765,20 +1819,31 @@
       for(let y=0;y<rh;y++)for(let x=0;x<rw;x++){
         const sx=Math.floor(x/rw*sw),sy=Math.floor(y/(rh-1)*(sh-1));let lo=255,hi=0;
         for(let oy=-4;oy<=4;oy+=4)for(let ox=-4;ox<=4;ox+=4){
-          const xx=(sx+ox+sw)%sw,yy=Math.max(0,Math.min(sh-1,sy+oy)),v=src[(yy*sw+xx)*4];
+          const xx=(sx+ox+sw)%sw,yy=Math.max(0,Math.min(sh-1,sy+oy)),v=src[yy*sw+xx];
           lo=Math.min(lo,v);hi=Math.max(hi,v);
         }
         earthElevation.rugged[y*rw+x]=(hi-lo)/255*EARTH_ELEVATION_MAX;
       }
       const gw=earthElevation.segW+1,gh=earthElevation.segH+1;
       earthElevation.grid=new Float32Array(gw*gh);
-      for(let j=0;j<gh;j++)for(let i=0;i<gw;i++){
-        const theta=j/earthElevation.segH*Math.PI,phi=i/earthElevation.segW*Math.PI*2,st=Math.sin(theta);
-        elevationLocalN.set(-Math.cos(phi)*st,Math.cos(theta),Math.sin(phi)*st);
-        earthElevation.grid[j*gw+i]=sampleEarthElevationRaster(elevationLocalN);
+      const longitudes=Array.from({length:gw},(_,i)=>{
+        const u=i/earthElevation.segW,phi=u*Math.PI*2;
+        return {u,x:-Math.cos(phi),z:Math.sin(phi)};
+      });
+      for(let j=0;j<gh;j++){
+        const v=j/earthElevation.segH,theta=v*Math.PI,sin=Math.sin(theta),cos=Math.cos(theta);
+        for(let i=0;i<gw;i++){
+          const {u,x,z}=longitudes[i];
+          elevationLocalN.set(x*sin,cos,z*sin);
+          earthElevation.grid[j*gw+i]=sampleEarthElevationRaster(elevationLocalN,sampleEarthElevationUV(u,v));
+        }
       }
-      earthElevation.ready=true;
       buildStableEarthMountains();
+      earthElevation.ready=true;
+      if(!loaderHidden){
+        loadText.textContent='Preparing the landing area…';
+        loadBar.style.width='72%';
+      }
       setTimeout(()=>{if(grounded&&groundPlanet===earth)spawnOn(earth);},0);
     }
     function loadRegions(){
@@ -1786,17 +1851,16 @@
       const done=()=>{if(--pending===0)finish();};
       for(const s of EARTH_MOUNTAIN_SITES){
         const regional=new Image();
-        regional.onload=()=>{const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');x.drawImage(regional,0,0,256,256);s.data=x.getImageData(0,0,256,256).data;done();};
+        regional.onload=()=>{s.data=elevationPixels(regional,256,256);done();};
         regional.onerror=done;regional.src='assets/earth/mountains/'+s.file;
       }
     }
     const img=new Image();
     img.onload=()=>{
-      const c=document.createElement('canvas');c.width=earthElevation.w;c.height=earthElevation.h;
-      const x=c.getContext('2d');x.drawImage(img,0,0,c.width,c.height);
-      earthElevation.data=x.getImageData(0,0,c.width,c.height).data;
+      earthElevation.data=elevationPixels(img,earthElevation.w,earthElevation.h);
       loadRegions();
     };
+    img.onerror=hideLoader;
     img.src='assets/earth/earth_elevation_nasa_4096.png';
   })();
   tryRealTexture(moon, TXP + 'moonmap1k.jpg');
@@ -2954,7 +3018,6 @@
     if (e.code === 'KeyC' && !e.repeat) toggleOverview();
     if (e.code === 'KeyH' && !e.repeat) setUniverseAnnotationsHidden(!universeAnnotationsHidden);
     if (e.code === 'KeyM' && !e.repeat) boostParker();
-    if (e.code === 'KeyL' && !e.repeat) toggleLaser();
     keys[e.code] = true;
     if (e.code === 'Space') e.preventDefault();
   });
@@ -2979,15 +3042,6 @@
       camDistTarget = Math.max(3, Math.min(60, camDistTarget + e.deltaY * 0.01));
     }
   }, { passive: true });
-  addEventListener('mousedown', e => {
-    if (e.button === 0 && document.pointerLockElement) {
-      if (laserEquipped) laserFiring = true; else fireAsteroid();
-    }
-  });
-  addEventListener('mouseup', e => {
-    if (e.button === 0) {laserFiring = false;finishEarthCraterNormals();}
-  });
-
   // ---------- Music (solo piano, Interstellar-inspired) ----------
   let audioCtx = null, musicOn = true, musicNodes = null;
   function startMusic() {
@@ -3264,7 +3318,7 @@
     earthSurfaceTiles.activeRadius=terrainRadiusPreference;
     earthSurfaceTiles.committedKeys.clear();earthSurfaceTiles.pendingKeys.clear();earthSurfaceTiles.pendingSignature=earthSurfaceTiles.committedSignature='';
     for(const tile of earthSurfaceTiles.tiles.values())tile.group.visible=false;
-    earthSurfaceCutaway.cosRadius.value=2;
+    earthSurfaceCutaway.cosRadius.value=earthSurfaceCutaway.orbitalCosRadius.value=2;
     try{localStorage.setItem('godman_terrain_radius',String(terrainRadiusPreference));}catch(err){}
     const width=terrainRadiusPreference*2+1;
     toast('Terrain distance: '+width+' × '+width+' chunks — streaming global mountains');
@@ -3508,7 +3562,8 @@
   const earthSurfaceTiles={
     tiles:new Map(),tileSize:480,lodSegments:[128,64,32,16],activeRadius:terrainRadiusPreference,frame:0,
     committedKeys:new Set(),committedCenter:new THREE.Vector3(0,1,0),committedSignature:'',
-    pendingKeys:new Set(),pendingCenter:new THREE.Vector3(0,1,0),pendingSignature:''
+    pendingKeys:new Set(),pendingCenter:new THREE.Vector3(0,1,0),pendingSignature:'',
+    pendingBuilds:[],nextBuild:0
   };
   const earthTileQ=new THREE.Quaternion(),earthTileN=new THREE.Vector3();
   function earthHash3(x,y,z){
@@ -3612,36 +3667,67 @@
   }
   const earthTileCenterWorld={value:new THREE.Vector3(0,1,0)},earthTileRenderCenter={value:new THREE.Vector3()};
   const earthTilePlanetInverse={value:new THREE.Matrix3()},earthTileRotation=new THREE.Matrix4();
-  const earthRockTint=new THREE.Color(0x68645d),earthSnowTint=new THREE.Color(0xd8d9d5);
   const earthTerrainTime={value:0};
-  const earthGroundDetailGLSL=`
-    uniform mat3 earthTilePlanetInverse;
-    uniform float earthTilePlanetRadius;
-    float earthGroundHash(vec3 p){vec3 q=fract(p*.1031);q+=dot(q,q.yzx+33.33);return fract((q.x+q.y)*q.z);}
-    float earthGroundNoise(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
-      return mix(mix(mix(earthGroundHash(i),earthGroundHash(i+vec3(1,0,0)),f.x),mix(earthGroundHash(i+vec3(0,1,0)),earthGroundHash(i+vec3(1,1,0)),f.x),f.y),mix(mix(earthGroundHash(i+vec3(0,0,1)),earthGroundHash(i+vec3(1,0,1)),f.x),mix(earthGroundHash(i+vec3(0,1,1)),earthGroundHash(i+vec3(1,1,1)),f.x),f.y),f.z);}
-  `;
-  const earthTileMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.96,metalness:0,emissive:0x030608,emissiveIntensity:.2});
+  const earthGroundDetail={value:window.GodmanEarthGround.makeDetailTexture(THREE)};
+  earthGroundDetail.value.anisotropy=Math.min(4,renderer.capabilities.getMaxAnisotropy());
+  const earthTileMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.96,metalness:0,
+    emissive:earthSurfaceEmission,emissiveIntensity:earthSurfaceEmissionIntensity});
   earthTileMat.extensions={derivatives:true};
   earthTileMat.onBeforeCompile=shader=>{
     shader.uniforms.earthTileCenterWorld=earthTileCenterWorld;
     shader.uniforms.earthTileRenderCenter=earthTileRenderCenter;
     shader.uniforms.earthTileCosRadius=earthSurfaceCutaway.cosRadius;
+    shader.uniforms.earthTileDetail=earthSurfaceCutaway.detail;
     shader.uniforms.earthTerrainTime=earthTerrainTime;
     shader.uniforms.earthTilePlanetInverse=earthTilePlanetInverse;
-    shader.uniforms.earthTilePlanetRadius={value:earth.r};
+    shader.uniforms.earthGroundDetail=earthGroundDetail;
     shader.vertexShader=shader.vertexShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vEarthTileDir;\nvarying float vEarthMeltStrength,vEarthMeltBirth;\nattribute float earthMeltStrength,earthMeltBirth;\nuniform vec3 earthTileRenderCenter;')
-      .replace('#include <begin_vertex>','#include <begin_vertex>\nvEarthTileDir=normalize((modelMatrix*vec4(position,1.0)).xyz-earthTileRenderCenter);\nvEarthMeltStrength=earthMeltStrength;vEarthMeltBirth=earthMeltBirth;');
+      .replace('#include <common>',`#include <common>
+        varying vec3 vEarthTilePoint;
+        varying vec4 vEarthGround;
+        varying float vEarthMeltStrength,vEarthMeltBirth;
+        attribute float earthMeltStrength,earthMeltBirth;
+        attribute vec4 earthGround;
+        uniform vec3 earthTileRenderCenter;`)
+      .replace('#include <begin_vertex>',`#include <begin_vertex>
+        vEarthTilePoint=(modelMatrix*vec4(position,1.0)).xyz-earthTileRenderCenter;
+        vEarthGround=earthGround;
+        vEarthMeltStrength=earthMeltStrength;
+        vEarthMeltBirth=earthMeltBirth;`);
     shader.fragmentShader=shader.fragmentShader
-      .replace('#include <common>','#include <common>\nvarying vec3 vEarthTileDir;\nvarying float vEarthMeltStrength,vEarthMeltBirth;\nuniform vec3 earthTileCenterWorld;\nuniform float earthTileCosRadius,earthTerrainTime;\n'+earthGroundDetailGLSL)
-      .replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(dot(normalize(vEarthTileDir),earthTileCenterWorld)<earthTileCosRadius)discard;')
-      .replace('#include <color_fragment>','#include <color_fragment>\nvec3 earthGroundPoint=earthTilePlanetInverse*normalize(vEarthTileDir)*earthTilePlanetRadius;\nfloat earthFootprint=max(length(dFdx(earthGroundPoint)),length(dFdy(earthGroundPoint)));\ndiffuseColor.rgb*=.815+.28*(earthGroundNoise(earthGroundPoint/18.)-.5)*(1.-smoothstep(9.,30.,earthFootprint))+.09*(earthGroundNoise(earthGroundPoint/6.)-.5)*(1.-smoothstep(3.,10.,earthFootprint));\nfloat earthMeltAge=max(0.0,earthTerrainTime-vEarthMeltBirth);float earthMeltHeat=exp(-earthMeltAge/18.0)*vEarthMeltStrength;\ndiffuseColor.rgb=mix(diffuseColor.rgb,vec3(.018,.014,.013),vEarthMeltStrength*.9);\ndiffuseColor.rgb=mix(diffuseColor.rgb,vec3(.42,.055,.008),earthMeltHeat*.42);')
-      .replace('#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\nroughnessFactor=mix(roughnessFactor,.34,vEarthMeltStrength);')
+      .replace('#include <common>',`#include <common>
+        varying vec3 vEarthTilePoint;
+        varying vec4 vEarthGround;
+        varying float vEarthMeltStrength,vEarthMeltBirth;
+        uniform vec3 earthTileCenterWorld;
+        uniform float earthTileCosRadius,earthTileDetail,earthTerrainTime;
+        ${window.GodmanEarthGround.detailGLSL}`)
+      .replace('#include <clipping_planes_fragment>',`#include <clipping_planes_fragment>
+        float earthRegion=dot(normalize(vEarthTilePoint),earthTileCenterWorld);
+        if(earthRegion<earthTileCosRadius)discard;`)
+      .replace('#include <color_fragment>',`#include <color_fragment>
+        vec3 groundRadial=earthTilePlanetInverse*normalize(vEarthTilePoint);
+        vec3 groundNormal=earthTilePlanetInverse*inverseTransformDirection(vNormal,viewMatrix);
+        float earthSnow, earthIce, earthBump;
+        vec3 satellite=diffuseColor.rgb;
+        vec3 detailed=earthSurfaceAlbedo(satellite,vEarthGround,groundRadial,groundNormal,earthSnow,earthIce,earthBump);
+        float fadeSpan=max((1.-earthTileCosRadius)*.54,1e-7);
+        float tileDetail=earthTileDetail*smoothstep(0.,fadeSpan,earthRegion-earthTileCosRadius);
+        diffuseColor.rgb=mix(satellite,detailed,tileDetail);
+        earthBump*=tileDetail;
+        earthSnow*=tileDetail;
+        float earthMeltAge=max(0.0,earthTerrainTime-vEarthMeltBirth);
+        float earthMeltHeat=exp(-earthMeltAge/18.0)*vEarthMeltStrength;
+        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.018,.014,.013),vEarthMeltStrength*.9);
+        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.42,.055,.008),earthMeltHeat*.42);`)
+      .replace('#include <normal_fragment_maps>',`#include <normal_fragment_maps>
+        normal=earthGroundNormal(normal,-vViewPosition,earthBump*(1.-vEarthMeltStrength));`)
+      .replace('#include <roughnessmap_fragment>',`#include <roughnessmap_fragment>
+        roughnessFactor=mix(mix(roughnessFactor,mix(.84,.51,earthIce),earthSnow),.34,vEarthMeltStrength);`)
       .replace('#include <metalnessmap_fragment>','#include <metalnessmap_fragment>\nmetalnessFactor=mix(metalnessFactor,.08,vEarthMeltStrength);')
       .replace('#include <emissivemap_fragment>','#include <emissivemap_fragment>\ntotalEmissiveRadiance+=vec3(1.25,.16,.012)*earthMeltHeat*(.35+.65*sin(earthTerrainTime*2.7+vEarthMeltStrength*19.0)*sin(earthTerrainTime*2.7+vEarthMeltStrength*19.0));');
   };
-  earthTileMat.customProgramCacheKey=()=> 'earth-walking-tiles-v5-continuous';
+  earthTileMat.customProgramCacheKey=()=> 'earth-ground-v8';
   const earthWaterTime={value:0};
   const earthWaterMat=new THREE.MeshPhysicalMaterial({
     color:0x095570,roughness:.27,metalness:0,transparent:true,opacity:.84,
@@ -3660,12 +3746,12 @@
   earthWaterMat.customProgramCacheKey=()=> 'earth-water-v2';
   function resetEarthSurfaceTiles(){
     for(const tile of earthSurfaceTiles.tiles.values()){
-      earth.mesh.remove(tile.group);
+      earthDetailRoot.remove(tile.group);
       tile.group.traverse(o=>{if(o.geometry)o.geometry.dispose();});
     }
     earthSurfaceTiles.tiles.clear();
     earthSurfaceTiles.committedKeys.clear();earthSurfaceTiles.pendingKeys.clear();earthSurfaceTiles.pendingSignature=earthSurfaceTiles.committedSignature='';
-    earthSurfaceCutaway.cosRadius.value=2;
+    earthSurfaceCutaway.cosRadius.value=earthSurfaceCutaway.orbitalCosRadius.value=2;
   }
   const terrainSurface=new window.GodmanTerrainSurface(THREE,earth.r,n=>{
     const base=sampleEarthElevationRaster(n);
@@ -3678,6 +3764,8 @@
     const anchorBase=sampleEarthElevationRaster(center),anchor=earth.r+anchorBase+earthFineReliefLocal(center,anchorBase);
     const q=new THREE.Quaternion().setFromUnitVectors(V3(0,1,0),center),qi=q.clone().invert(),S=earthSurfaceTiles.lodSegments[lod],N=S+1;
     const positions=new Float32Array(N*N*3),localDirs=new Float64Array(N*N*3),baseRadii=new Float64Array(N*N),normals=new Float32Array(N*N*3),meltStrengths=new Float32Array(N*N),meltBirths=new Float32Array(N*N),waterPositions=new Float32Array(N*N*3),waterEdges=new Float32Array(N*N),uvs=new Float32Array(N*N*2),colors=new Float32Array(N*N*3),indices=[],waterIndices=[];
+    const groundCoords=new Float32Array(N*N*4);
+    const groundOrigin=window.GodmanEarthGround.groundOrigin(center.clone().multiplyScalar(anchor),new THREE.Vector3());
     meltBirths.fill(-1000);
     const dir=new THREE.Vector3(),cellDir=new THREE.Vector3(),point=new THREE.Vector3(),normal=new THREE.Vector3(),col=new THREE.Color();
     for(let j=0;j<N;j++)for(let i=0;i<N;i++){
@@ -3685,6 +3773,7 @@
       dir.set(-Math.cos(lon)*c,Math.sin(lat),Math.sin(lon)*c).normalize();
       const base=sampleEarthElevationRaster(dir),water=earthWaterLocal(dir),relief=earthFineReliefLocal(dir,base),baseRadius=earth.r+base+relief,rr=baseRadius+earthCraterDispLocal(dir);
       localDirs[k*3]=dir.x;localDirs[k*3+1]=dir.y;localDirs[k*3+2]=dir.z;baseRadii[k]=baseRadius;
+      window.GodmanEarthGround.writeGroundVertex(groundCoords,k,dir,rr,earth.r,groundOrigin);
       const melt=sampleEarthMeltLocal(dir);meltStrengths[k]=melt.strength;meltBirths[k]=melt.birth;
       point.copy(dir).multiplyScalar(rr).addScaledVector(center,-anchor).applyQuaternion(qi);
       positions[k*3]=point.x;positions[k*3+1]=point.y;positions[k*3+2]=point.z;
@@ -3697,8 +3786,6 @@
       if(water)col.setRGB(.018,.045,.055);else if(!earthAlbedoLocal(dir,col)){
         if(base<2)col.setRGB(.055,.11,.16);else if(base>500)col.setRGB(.48,.48,.45);else if(base>300)col.setRGB(.25,.24,.21);else if(base>150)col.setRGB(.17,.21,.14);else if(Math.abs(lat)>.85)col.setRGB(.24,.25,.21);else col.setRGB(.12,.23,.1);
       }
-      const rugged=Math.max(0,Math.min(1,sampleEarthRuggednessLocal(dir)/150));
-      if(!water&&rugged>.35)col.lerp(base>420?earthSnowTint:earthRockTint,Math.min(.52,rugged*.42));
       colors[k*3]=col.r;colors[k*3+1]=col.g;colors[k*3+2]=col.b;
     }
     for(let j=0;j<S;j++)for(let i=0;i<S;i++){
@@ -3707,7 +3794,7 @@
       cellDir.set(-Math.cos(lon)*cc,Math.sin(lat),Math.sin(lon)*cc).normalize();
       if(earthWaterLocal(cellDir))waterIndices.push(a,b,c,b,d,c);
     }
-    const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(positions,3));geo.setAttribute('uv',new THREE.BufferAttribute(uvs,2));geo.setAttribute('color',new THREE.BufferAttribute(colors,3));geo.setAttribute('earthMeltStrength',new THREE.BufferAttribute(meltStrengths,1));geo.setAttribute('earthMeltBirth',new THREE.BufferAttribute(meltBirths,1));geo.setIndex(indices);geo.setAttribute('normal',new THREE.BufferAttribute(normals,3));geo.computeBoundingSphere();
+    const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(positions,3));geo.setAttribute('uv',new THREE.BufferAttribute(uvs,2));geo.setAttribute('color',new THREE.BufferAttribute(colors,3));geo.setAttribute('earthGround',new THREE.BufferAttribute(groundCoords,4));geo.setAttribute('earthMeltStrength',new THREE.BufferAttribute(meltStrengths,1));geo.setAttribute('earthMeltBirth',new THREE.BufferAttribute(meltBirths,1));geo.setIndex(indices);geo.setAttribute('normal',new THREE.BufferAttribute(normals,3));geo.computeBoundingSphere();
     const group=new THREE.Group();group.position.copy(center).multiplyScalar(anchor);group.quaternion.copy(q);group.name='Earth surface '+key;
     const mesh=new THREE.Mesh(geo,earthTileMat);mesh.castShadow=shoulderFlashlight.light.castShadow;mesh.receiveShadow=true;mesh.renderOrder=2;group.add(mesh);
     // Downward skirts overlap neighbouring LODs. Their top edge is identical
@@ -3735,30 +3822,33 @@
       const next=(e+1)%perimeter.length,a=e*2,b=a+1,c=next*2,d=c+1;skirtIndices.push(a,c,b,c,d,b);
     }
     const skirtGeo=new THREE.BufferGeometry();skirtGeo.setAttribute('position',new THREE.BufferAttribute(skirtPositions,3));skirtGeo.setAttribute('color',new THREE.BufferAttribute(skirtColors,3));skirtGeo.setAttribute('earthMeltStrength',new THREE.BufferAttribute(skirtMeltStrengths,1));skirtGeo.setAttribute('earthMeltBirth',new THREE.BufferAttribute(skirtMeltBirths,1));skirtGeo.setIndex(skirtIndices);skirtGeo.computeVertexNormals();skirtGeo.computeBoundingSphere();
+    skirtGeo.setAttribute('earthGround',new THREE.BufferAttribute(new Float32Array(perimeter.length*2*4),4));
     const skirtMesh=new THREE.Mesh(skirtGeo,earthTileMat);skirtMesh.receiveShadow=true;skirtMesh.renderOrder=1;group.add(skirtMesh);
     if(waterIndices.length){
       const wg=new THREE.BufferGeometry();wg.setAttribute('position',new THREE.BufferAttribute(waterPositions,3));wg.setAttribute('uv',new THREE.BufferAttribute(uvs.slice(),2));wg.setAttribute('earthWaterEdge',new THREE.BufferAttribute(waterEdges,1));wg.setIndex(waterIndices);wg.computeVertexNormals();wg.computeBoundingSphere();
       const waterMesh=new THREE.Mesh(wg,earthWaterMat);waterMesh.renderOrder=3;group.add(waterMesh);
     }
-    earth.mesh.add(group);
-    const tile={key,ix,iy,lonCells,latCells,lod,group,mesh,skirtMesh,lastUsed:earthSurfaceTiles.frame,center:center.clone(),anchor,qi:qi.clone(),N,localDirs,baseRadii,perimeter,skirtRadials,skirtDepth};terrainSurface.refreshSkirt(tile);earthSurfaceTiles.tiles.set(key,tile);return tile;
+    earthDetailRoot.add(group);
+    const tile={key,ix,iy,lonCells,latCells,lod,group,mesh,skirtMesh,lastUsed:earthSurfaceTiles.frame,center:center.clone(),anchor,qi:qi.clone(),N,localDirs,baseRadii,groundOrigin,perimeter,skirtRadials,skirtDepth};terrainSurface.refreshSkirt(tile);earthSurfaceTiles.tiles.set(key,tile);return tile;
   }
   const earthDeformDir=new THREE.Vector3(),earthDeformPoint=new THREE.Vector3(),earthDeformNormal=new THREE.Vector3();
   function refreshEarthTileDeformation(tile,cr){
     const tileReach=earthSurfaceTiles.tileSize*.78;
     if(tile.center.distanceTo(cr.n)*earth.r>cr.R*1.35+tileReach)return;
+    const groundAttr=tile.mesh.geometry.attributes.earthGround;
     const attr=tile.mesh.geometry.attributes.position,normalAttr=tile.mesh.geometry.attributes.normal,meltStrengthAttr=tile.mesh.geometry.attributes.earthMeltStrength,meltBirthAttr=tile.mesh.geometry.attributes.earthMeltBirth;
     for(let k=0;k<tile.baseRadii.length;k++){
       const i=k*3;
       earthDeformDir.set(tile.localDirs[i],tile.localDirs[i+1],tile.localDirs[i+2]);
       const rr=tile.baseRadii[k]+earthCraterDispLocal(earthDeformDir);
+      window.GodmanEarthGround.writeGroundVertex(groundAttr.array,k,earthDeformDir,rr,earth.r,tile.groundOrigin);
       earthDeformPoint.copy(earthDeformDir).multiplyScalar(rr).addScaledVector(tile.center,-tile.anchor).applyQuaternion(tile.qi);
       attr.setXYZ(k,earthDeformPoint.x,earthDeformPoint.y,earthDeformPoint.z);
       terrainSurface.normal(earthDeformDir,rr,earthDeformNormal).applyQuaternion(tile.qi);
       normalAttr.setXYZ(k,earthDeformNormal.x,earthDeformNormal.y,earthDeformNormal.z);
       const melt=sampleEarthMeltLocal(earthDeformDir);meltStrengthAttr.setX(k,melt.strength);meltBirthAttr.setX(k,melt.birth);
     }
-    attr.needsUpdate=true;normalAttr.needsUpdate=true;meltStrengthAttr.needsUpdate=true;meltBirthAttr.needsUpdate=true;
+    attr.needsUpdate=true;normalAttr.needsUpdate=true;groundAttr.needsUpdate=true;meltStrengthAttr.needsUpdate=true;meltBirthAttr.needsUpdate=true;
     tile.mesh.geometry.computeBoundingSphere();terrainSurface.stitch(tile,tile.stitchSteps||[1,1,1,1],true);
   }
 
@@ -3776,16 +3866,33 @@
       terrainSurface.stitch(tile,[step(tile.ix-1,tile.iy),step(tile.ix+1,tile.iy),step(tile.ix,tile.iy-1),step(tile.ix,tile.iy+1)]);
     }
   }
+  function updateEarthCutaway(altitude){
+    // Keep the detailed ring cached above the transition so it is ready
+    // during descent. Shrink its visible footprint before handing off.
+    const coverage=1-THREE.MathUtils.smoothstep(altitude,1550,3450);
+    if(!earthSurfaceTiles.committedSignature||coverage<=0){
+      earthSurfaceCutaway.cosRadius.value=earthSurfaceCutaway.orbitalCosRadius.value=2;
+      return;
+    }
+    const {terrainCos,orbitalCos}=earthSurfaceTiles;
+    const scale=coverage*coverage;
+    earthSurfaceCutaway.cosRadius.value=terrainCos>1?2:1-(1-terrainCos)*scale;
+    earthSurfaceCutaway.orbitalCosRadius.value=orbitalCos>1?2:1-(1-orbitalCos)*scale;
+  }
+
   function updateEarthSurfaceTiles(){
     earthSurfaceTiles.frame++;
-    const altitude=pos.distanceTo(earth.center)-earth.r,active=!earth.destroyed&&earthElevation.ready&&altitude<5000;
+    const altitude=pos.distanceTo(earth.center)-earth.r;
+    const active=!earth.destroyed&&earthElevation.ready&&altitude<5000;
+    earthSurfaceCutaway.detail.value=active?1-THREE.MathUtils.smoothstep(altitude,1150,3000):0;
     if(!active){
       if(earthSurfaceTiles.pendingSignature){
         for(const tile of earthSurfaceTiles.tiles.values())tile.group.visible=false;
         earthSurfaceTiles.committedKeys.clear();earthSurfaceTiles.pendingKeys.clear();
         earthSurfaceTiles.pendingSignature=earthSurfaceTiles.committedSignature='';
+        earthSurfaceTiles.pendingBuilds.length=0;
       }
-      earthSurfaceCutaway.cosRadius.value=2;return;
+      earthSurfaceCutaway.cosRadius.value=earthSurfaceCutaway.orbitalCosRadius.value=2;return;
     }
     earthTileQ.copy(earth.mesh.quaternion).invert();earthTileN.copy(pos).sub(earth.center).normalize().applyQuaternion(earthTileQ).normalize();
     let lon=Math.atan2(earthTileN.z,-earthTileN.x);if(lon<0)lon+=Math.PI*2;const lat=Math.asin(Math.max(-1,Math.min(1,earthTileN.y)));
@@ -3802,45 +3909,46 @@
         earthSurfaceTiles.pendingSignature=signature;
         earthSurfaceTiles.pendingKeys=earthSurfaceTiles.committedKeys;
         earthSurfaceTiles.pendingCenter.copy(earthSurfaceTiles.committedCenter);
+        earthSurfaceTiles.pendingBuilds.length=0;
       }
       earthTileCenterWorld.value.copy(earthSurfaceTiles.committedCenter).applyQuaternion(earth.mesh.quaternion).normalize();
+      updateEarthCutaway(altitude);
       return;
     }
-    const wanted=new Set(),missing=[],requested=new Map();
-    for(let dy=-earthSurfaceTiles.activeRadius;dy<=earthSurfaceTiles.activeRadius;dy++)for(let dx=-lonRadius;dx<=lonRadius;dx++){
-      const ix=((cx+dx)%lonCells+lonCells)%lonCells,iy=Math.max(0,Math.min(latCells-1,cy+dy)),d=dx*dx+dy*dy,lod=d<=2?0:(d<=12?1:(d<=36?2:3));
-      const cell=ix+':'+iy,old=requested.get(cell);
-      if(!old||d<old.d)requested.set(cell,{ix,iy,lod,d});
-    }
-    // Clamping latitude at a pole can request one cell at several LODs.
-    // Render only its finest requested version, never overlapping surfaces.
-    for(const request of requested.values()){
-      const key=request.ix+':'+request.iy+':'+request.lod;wanted.add(key);
-      if(!earthSurfaceTiles.tiles.has(key))missing.push(request);
-    }
     if(signature!==earthSurfaceTiles.pendingSignature){
+      const wanted=new Set(),missing=[],requested=new Map();
+      for(let dy=-earthSurfaceTiles.activeRadius;dy<=earthSurfaceTiles.activeRadius;dy++)for(let dx=-lonRadius;dx<=lonRadius;dx++){
+        const ix=((cx+dx)%lonCells+lonCells)%lonCells,iy=Math.max(0,Math.min(latCells-1,cy+dy)),d=dx*dx+dy*dy,lod=d<=2?0:(d<=12?1:(d<=36?2:3));
+        const cell=ix+':'+iy,old=requested.get(cell);
+        if(!old||d<old.d)requested.set(cell,{ix,iy,lod,d});
+      }
+      // Polar rows can request a cell more than once. Keep its finest LOD.
+      for(const request of requested.values()){
+        const key=request.ix+':'+request.iy+':'+request.lod;
+        wanted.add(key);
+        if(!earthSurfaceTiles.tiles.has(key))missing.push(request);
+      }
+      missing.sort((a,b)=>a.d-b.d||a.lod-b.lod);
       earthSurfaceTiles.pendingSignature=signature;
       earthSurfaceTiles.pendingKeys=wanted;
-      earthSurfaceTiles.pendingCenter.copy(earthTileN);
-    }else earthSurfaceTiles.pendingKeys=wanted;
-
-    // Keep the last fully built ring visible while its replacement streams.
-    // This transactional handoff prevents missing rectangles when a jump or
-    // fast landing crosses a tile boundary before the new LODs are ready.
-    for(const tile of earthSurfaceTiles.tiles.values()){
-      tile.group.visible=earthSurfaceTiles.committedKeys.has(tile.key);
-      if(tile.group.visible)tile.lastUsed=earthSurfaceTiles.frame;
+      earthSurfaceTiles.pendingBuilds=missing;
+      earthSurfaceTiles.nextBuild=0;
+      const centerLon=(cx+.5)*lonStep,centerLat=-Math.PI*.5+(cy+.5)*latStep;
+      const cosLat=Math.cos(centerLat);
+      earthSurfaceTiles.pendingCenter.set(-Math.cos(centerLon)*cosLat,Math.sin(centerLat),Math.sin(centerLon)*cosLat);
     }
-    missing.sort((a,b)=>a.d-b.d||a.lod-b.lod);
     // Build outward from the player under a small per-frame budget. Ultra can
     // cover far more land without turning a single frame into a long pause.
+    const {pendingBuilds,pendingKeys}=earthSurfaceTiles;
     const buildStart=performance.now(),buildLimit=earthSurfaceTiles.activeRadius>=7?2:3;
-    for(let i=0;i<Math.min(buildLimit,missing.length);i++){
-      const m=missing[i],tile=buildEarthSurfaceTile(m.ix,m.iy,lonCells,latCells,m.lod);tile.group.visible=false;tile.lastUsed=earthSurfaceTiles.frame;
-      if(i>0&&performance.now()-buildStart>6)break;
+    for(let i=0;i<buildLimit&&earthSurfaceTiles.nextBuild<pendingBuilds.length;i++){
+      const m=pendingBuilds[earthSurfaceTiles.nextBuild++];
+      const tile=buildEarthSurfaceTile(m.ix,m.iy,lonCells,latCells,m.lod);
+      tile.group.visible=false;
+      if(performance.now()-buildStart>6)break;
     }
-    let complete=true;for(const key of earthSurfaceTiles.pendingKeys)if(!earthSurfaceTiles.tiles.has(key)){complete=false;break;}
-    if(complete){
+    // Keep the committed ring intact until all replacement tiles are ready.
+    if(earthSurfaceTiles.nextBuild===pendingBuilds.length){
       for(const key of earthSurfaceTiles.committedKeys){const old=earthSurfaceTiles.tiles.get(key);if(old)old.group.visible=false;}
       earthSurfaceTiles.committedKeys=new Set(earthSurfaceTiles.pendingKeys);
       earthSurfaceTiles.committedSignature=signature;
@@ -3848,18 +3956,30 @@
       earthSurfaceTiles.committedCenter.copy(earthSurfaceTiles.pendingCenter);
       for(const key of earthSurfaceTiles.committedKeys){const tile=earthSurfaceTiles.tiles.get(key);if(tile){tile.group.visible=true;tile.lastUsed=earthSurfaceTiles.frame;}}
       earthSurfaceCutaway.center.value.copy(earthSurfaceTiles.committedCenter);
-      earthSurfaceCutaway.cosRadius.value=Math.cos(earthSurfaceTiles.tileSize*(earthSurfaceTiles.activeRadius+.9)/earth.r);
+      const south=-Math.PI*.5+Math.max(0,cy-earthSurfaceTiles.activeRadius)*latStep;
+      const north=-Math.PI*.5+Math.min(latCells,cy+earthSurfaceTiles.activeRadius+1)*latStep;
+      const latitude=-Math.PI*.5+(cy+.5)*latStep,longitudeSpan=(lonRadius+.5)*lonStep;
+      earthSurfaceTiles.terrainCos=window.GodmanTerrainSurface.coveredCapCos(
+        latitude,longitudeSpan,south,north,angular*.20
+      );
+      // Keep a small orbital overlap beneath the rim. At an oblique angle
+      // the high-detail and orbital surfaces intersect a ray at different
+      // positions, even though their angular bounds share the same center.
+      earthSurfaceTiles.orbitalCos=window.GodmanTerrainSurface.coveredCapCos(
+        latitude,longitudeSpan,south,north,angular*.66
+      );
     }
     // The tiles rotate with Earth, so their circular clipping centre must do
     // the same every frame. A frozen world-space value was the main source of
     // moving rectangular cut-outs during airborne camera movement.
     earthTileCenterWorld.value.copy(earthSurfaceTiles.committedCenter).applyQuaternion(earth.mesh.quaternion).normalize();
-    const cacheMargin=Math.max(24,earthSurfaceTiles.activeRadius*8),cacheLimit=wanted.size+cacheMargin;
+    updateEarthCutaway(altitude);
+    const cacheMargin=Math.max(24,earthSurfaceTiles.activeRadius*8),cacheLimit=pendingKeys.size+cacheMargin;
     if(earthSurfaceTiles.tiles.size>cacheLimit){
       const protectedKeys=new Set([...earthSurfaceTiles.committedKeys,...earthSurfaceTiles.pendingKeys]);
       const old=[...earthSurfaceTiles.tiles.values()].filter(t=>!protectedKeys.has(t.key)&&!t.group.visible).sort((a,b)=>a.lastUsed-b.lastUsed);
-      const cacheTarget=wanted.size+Math.floor(cacheMargin*.5);
-      while(earthSurfaceTiles.tiles.size>cacheTarget&&old.length){const tile=old.shift();earth.mesh.remove(tile.group);tile.group.traverse(o=>{if(o.geometry)o.geometry.dispose();});earthSurfaceTiles.tiles.delete(tile.key);}
+      const cacheTarget=pendingKeys.size+Math.floor(cacheMargin*.5);
+      while(earthSurfaceTiles.tiles.size>cacheTarget&&old.length){const tile=old.shift();earthDetailRoot.remove(tile.group);tile.group.traverse(o=>{if(o.geometry)o.geometry.dispose();});earthSurfaceTiles.tiles.delete(tile.key);}
     }
   }
 
@@ -4218,7 +4338,7 @@
     // Recalculate absolute radii in place. Normalizing the current vertex first
     // prevents cumulative distortion, while avoiding a new 28k-vertex geometry
     // allocation on every laser tick.
-    const geo = p.mesh.geometry;
+    const geo = p===earth&&earthGlobe.detail?earthGlobe.detail:p.mesh.geometry;
     const attr = geo.attributes.position;
     const v = new THREE.Vector3();
     const base=p===earth?(p._baseTerrainPositions||(p._baseTerrainPositions=new Float32Array(attr.array))):null;
@@ -4253,8 +4373,9 @@
     const finish=()=>{
       earthCraterNormalJob=false;
       if(laserFiring){finishEarthCraterNormals();return;}
-      earth.mesh.geometry.computeVertexNormals();
-      earth.mesh.geometry.attributes.normal.needsUpdate=true;
+      const geo=earthGlobe.detail||earth.mesh.geometry;
+      geo.computeVertexNormals();
+      geo.attributes.normal.needsUpdate=true;
       earth._craterNormalsDirty=false;
     };
     if(typeof requestIdleCallback==='function')requestIdleCallback(finish,{timeout:500});else setTimeout(finish,30);
@@ -4463,29 +4584,44 @@
   }
 
   spawnOn(homePlanet());
-  // build all surface relief behind the loading screen
-  (function buildRelief() {
-    loadTotal = reliefQueue.length + 1; // +1 for Earth's city lights
-    loadBar.style.width = '2%';
-    const h2 = setInterval(() => {
-      const o = reliefQueue.shift();
-      if (!o) { clearInterval(h2); return; }
-      try {
-        const m2 = o.mesh.material;
-        let sharedNormal=reliefNormalCache.get(o.tex);
-        if(!sharedNormal){sharedNormal=normalFromCanvas(o.tex.image,2.2);reliefNormalCache.set(o.tex,sharedNormal);}
-        m2.normalMap = sharedNormal;
-        m2.normalScale = new THREE.Vector2(0.85, 0.85);
-        m2.bumpMap = null;
-        m2.needsUpdate = true;
-      } catch (e) {}
-      loadTick('Sculpting ' + o.name + '...');
-    }, 60);
-  })();
+  // A texture's bump map is available immediately. Build the higher-quality
+  // normal map only for a world that is close enough to show surface relief.
+  let nextReliefCheck=0;
+  function scheduleVisibleRelief(cameraWorld,time){
+    if(pendingRelief||time<nextReliefCheck)return;
+    nextReliefCheck=time+.25;
+    let body=null,best=32;
+    for(const p of planets){
+      if(!p.reliefPending||p._realNormal||p===earth||p.destroyed)continue;
+      const distance=cameraWorld.distanceTo(p.center)/p.r;
+      if(distance<best){body=p;best=distance;}
+    }
+    if(!body)return;
+    pendingRelief=body;
+    const prepare=()=>{
+      pendingRelief=null;
+      if(body.destroyed||body._realNormal)return;
+      body.reliefPending=false;
+      try{
+        const material=body.mesh.material,texture=body.tex;
+        let normal=reliefNormalCache.get(texture);
+        if(!normal){
+          normal=normalFromCanvas(texture.image,2.2);
+          reliefNormalCache.set(texture,normal);
+        }
+        material.normalMap=normal;
+        material.normalScale.set(.85,.85);
+        material.bumpMap=null;
+        material.needsUpdate=true;
+      }catch(e){}
+    };
+    if(typeof requestIdleCallback==='function')requestIdleCallback(prepare,{timeout:1000});
+    else setTimeout(prepare,0);
+  }
 
   // ---------- Main loop ----------
   const clock = new THREE.Clock();
-  let elapsed = 0;
+  let elapsed = 0, nextLoadingDraw=0;
   // Opt-in timings for local performance checks; ordinary play has no samples.
   const profileEnabled=new URLSearchParams(location.search).has('profile');
   const profile={frames:0,frameMs:0,cpuMs:0,terrainMs:0,animationMs:0,renderMs:0};
@@ -4840,41 +4976,18 @@
     updateEarthSurfaceTiles();
     if(profileEnabled)profileTerrain=performance.now()-profileTerrain;
 
-    // ---------- Atmosphere immersion ----------
-    let skyFactor=0,localDaylight=0;
+    // ---------- Local lighting at the astronaut ----------
+    let skyFactor=0;
     const illuminationStar=nearestStarTo(pos);
     const eclipseVisibility=stellarVisibility(pos,illuminationStar,nearestP);
     const skyProfile=window.GodmanSkyProfile(nearestP);
     const atmosphericDepth=skyProfile?skyProfile.top/10:1;
     const immersion=skyProfile?1-THREE.MathUtils.smoothstep(Math.max(0,distSurf),atmosphericDepth*.12,atmosphericDepth*1.25):0;
-    if(lastAtmoMat&&lastAtmoMat!==(nearestP.atmoMat||null))lastAtmoMat.uniforms.fade.value=1;
     if(skyProfile){
       const upN=tmpV.copy(pos).sub(nearestP.center).normalize();
       const starDir=tmpV3.copy(illuminationStar.center).sub(pos).normalize();
-      localDaylight=window.GodmanSkyDaylight(upN.dot(starDir))*eclipseVisibility;
-      skyFactor=immersion*localDaylight;
-      skyLight.color.setHex(skyProfile.tint);skyLight.position.copy(upN);
-      if(nearestP.atmoMat){
-        nearestP.atmoMat.uniforms.fade.value=1-immersion;
-        nearestP.atmoMat.uniforms.starVisibility.value=eclipseVisibility;
-        lastAtmoMat=nearestP.atmoMat;
-      }
-    }
-    // The scene's Color background overrides renderer.setClearColor. The
-    // directional sky now renders in front of that space background instead.
-    const fogHeight=skyProfile?skyProfile.scale/10*.6:0;
-    surfaceAtmosphere.update({
-      enabled:!!skyProfile&&distSurf<fogHeight,
-      bodyRadius:nearestP.r,altitude:Math.max(0,distSurf),skyFactor,daylight:localDaylight,
-      atmosphereColor:skyProfile?skyProfile.tint:0,
-      fadeHeight:fogHeight
-    });
-    const nightTransmission=skyProfile&&skyProfile.haze>.3?Math.exp(-skyProfile.haze*18):1;
-    const deepSkyTarget=(1-(1-Math.pow(1-localDaylight,3))*immersion)*(1-immersion+nightTransmission*immersion);
-    deepSkyVisibility=damp(deepSkyVisibility,deepSkyTarget,deepSkyTarget>deepSkyVisibility?.7:5,dt);
-    for (const m of starMats) {
-      if(m.userData.godmanBaseOpacity===undefined)m.userData.godmanBaseOpacity=m.opacity;
-      m.opacity=m.userData.godmanBaseOpacity*deepSkyVisibility;
+      skyFactor=immersion*window.GodmanSkyDaylight(upN.dot(starDir))*eclipseVisibility;
+      skyLight.position.copy(upN);
     }
 
     // ---------- Asteroids & explosions ----------
@@ -5147,8 +5260,14 @@
     tmpV.copy(illuminationStar.center).sub(pos).normalize();
     const nearAtmosphere=!!skyProfile&&distSurf<atmosphericDepth*1.5;
     const sunHeight=Math.max(-1,Math.min(1,smoothUp.dot(tmpV)));
-    const directDay=THREE.MathUtils.smoothstep(sunHeight,nearAtmosphere?-.025:0,nearAtmosphere?.10:.015);
+    const earthTwilight=nearestP===earth&&nearAtmosphere;
+    const twilight=earthTwilight?window.GodmanPhysicalLighting.earthTwilight(sunHeight):0;
+    // Elevated terrain can catch the last rays below the sea-level horizon.
+    const horizonDip=earthTwilight?Math.min(.055,Math.sqrt(2*Math.max(0,distSurf)/earth.r))*immersion:0;
+    const fullSun=nearAtmosphere?.10-(earthTwilight?.038*immersion:0):.015;
+    const directDay=THREE.MathUtils.smoothstep(sunHeight+horizonDip,nearAtmosphere?-.025:0,fullSun);
     physicalLighting.update({dt:dt,star:illuminationStar,distance:starDistance,au:AU,
+      twilight:twilight,skyTint:skyProfile?skyProfile.tint:0xa9d2ff,
       skyFactor:skyFactor,surface:!nearestP.isStar&&distSurf<nearestP.r*.08,nearAtmosphere:nearAtmosphere?1:0,sunHeight:sunHeight,directDay:directDay,eclipse:eclipseVisibility});
     characterLightTarget.position.copy(smoothUp).multiplyScalar(1.1);
     characterKey.position.copy(characterLightTarget.position).addScaledVector(tmpV,12);
@@ -5299,6 +5418,48 @@
     // ---- Floating origin ----
     for (const ro of renderObjs) ro.o.position.copy(ro.w).sub(pos);
     const camW = tmpV3.copy(camera.position).add(pos);
+    updateEarthGlobe(camW);
+    scheduleVisibleRelief(camW,elapsed);
+    player.visible=!overview||overviewDist<2500;
+    if(!player.visible)characterKey.castShadow=false;
+    // The overview camera can be in space while the astronaut is on Earth.
+    // Fog, the planet's limb and sky extinction all follow the camera.
+    let skyBody=nearestP;
+    if(overview){
+      let closest=Infinity;
+      for(const p of planets){
+        if(p.isStar||p.destroyed)continue;
+        const altitude=camW.distanceTo(p.center)-p.r;
+        if(altitude<closest){closest=altitude;skyBody=p;}
+      }
+    }
+    const skyStar=overview?nearestStarTo(camW):illuminationStar;
+    const skyEclipse=overview?stellarVisibility(camW,skyStar,skyBody):eclipseVisibility;
+    const viewSky=planetarySky.update(camera,skyBody,pos,skyStar,elapsed,skyEclipse,AU);
+    const viewProfile=planetarySky.profile;
+    const fogHeight=viewProfile?viewProfile.scale/10*.6:0;
+    surfaceAtmosphere.update({
+      enabled:!!viewProfile&&viewSky.altitude<fogHeight,
+      bodyRadius:skyBody.r,altitude:Math.max(0,viewSky.altitude),
+      skyFactor:viewSky.skyFactor,daylight:viewSky.daylight,
+      twilight:skyBody===earth?window.GodmanPhysicalLighting.earthTwilight(viewSky.sunHeight):0,
+      atmosphereColor:viewProfile?viewProfile.tint:0,fadeHeight:fogHeight
+    });
+    const atmoMat=skyBody.atmoMat||null;
+    if(lastAtmoMat&&lastAtmoMat!==atmoMat)lastAtmoMat.uniforms.fade.value=1;
+    if(atmoMat){
+      atmoMat.uniforms.fade.value=1-viewSky.immersion;
+      atmoMat.uniforms.starVisibility.value=skyEclipse;
+    }
+    lastAtmoMat=atmoMat;
+    const skyTarget=viewSky.starVisibility;
+    deepSkyVisibility=overview||overview!==previousOverview?skyTarget:
+      damp(deepSkyVisibility,skyTarget,skyTarget>deepSkyVisibility?.7:5,dt);
+    previousOverview=overview;
+    for(const m of starMats){
+      if(m.userData.godmanBaseOpacity===undefined)m.userData.godmanBaseOpacity=m.opacity;
+      m.opacity=m.userData.godmanBaseOpacity*deepSkyVisibility;
+    }
     if(blackhole.lensingMesh){
       renderer.getDrawingBufferSize(blackhole.viewportSize);
       blackhole.viewVector.copy(blackhole.lensingMesh.position).sub(camera.position);
@@ -5383,10 +5544,9 @@
       chargeWrap.style.display = 'none';
     }
 
-    adaptiveQuality.sample(dt);
-    // Star density and resolution recover independently. This keeps the full
-    // multi-million-star view on fast hardware, while smoothly trimming only
-    // the least perceptible samples when sustained frame time rises.
+    if(loaderHidden&&!document.hidden)adaptiveQuality.sample(frameDt);
+    // Remote galaxies can shed samples under load. The Milky Way's resolved
+    // star set stays fixed so its brightness and structure do not flicker.
     deepSkyRenderer.setDensityScale(17.5/Math.max(14,adaptiveQuality.frameEma));
     // Render directly at normal quality. The off-screen bloom target is not
     // multisampled in this Three.js version and produced crawling terrain
@@ -5397,15 +5557,22 @@
     // above the atmosphere or visits an airless body.
     // Atmosphere extinction is continuous; never hard-toggle the star layers.
     for(const layer of starLayers)layer.visible=deepSkyVisibility>.002;
-    planetarySky.update(camera,nearestP,pos,illuminationStar,elapsed,eclipseVisibility,AU);
-    deepSkyRenderer.update(elapsed,pos,camera.position,deepSkyVisibility);
-    const suppressEarthOrbitalLayers=nearestP===earth&&distSurf<2500;
-    if(earth.cloudMesh)earth.cloudMesh.visible=!(nearestP===earth&&planetarySky.layers.some(layer=>layer.visible));
-    if(earth.nightMesh)earth.nightMesh.visible=!suppressEarthOrbitalLayers;
+    const panoramaVisible=deepSkyRenderer.update(elapsed,pos,camera,deepSkyVisibility,renderer.getDrawingBufferSize(deepSkyViewport));
+    if(milkyWayCredit.hidden===panoramaVisible)milkyWayCredit.hidden=!panoramaVisible;
+    if(earth.cloudMesh&&skyBody===earth&&planetarySky.layers.some(layer=>layer.visible))earth.cloudMesh.visible=false;
+    if(earth.nightMesh&&skyBody===earth&&viewSky.altitude<2500)earth.nightMesh.visible=false;
     earthTileRenderCenter.value.copy(earth.mesh.position);
     earthTileRotation.makeRotationFromQuaternion(earth.mesh.quaternion).invert();
     earthTilePlanetInverse.value.setFromMatrix4(earthTileRotation);
     if (stylePass) stylePass.uniforms.time.value = elapsed;
+    const landingAreaReady=!loaderHidden&&earthElevation.ready&&
+      (earthSurfaceTiles.committedSignature||pos.distanceToSquared(earth.center)>(earth.r+5000)**2);
+    // Warm shaders behind the loading screen without competing with terrain
+    // streaming for a full-resolution draw on every animation frame.
+    if(!loaderHidden&&!landingAreaReady){
+      if(elapsed<nextLoadingDraw)return;
+      nextLoadingDraw=elapsed+.15;
+    }
     if(blackhole.passActive){
       const effectRadius=blackhole.effectRadiusPx;
       const desiredScale=effectRadius<96?.34:effectRadius<240?.46:effectRadius<540?.58:.62;
@@ -5439,8 +5606,10 @@
         blackhole.captureSize.set(captureWidth,captureHeight);
         blackhole.lensingMesh.visible=false;
         renderer.setRenderTarget(blackhole.captureTarget);
+        deepSkyRenderer.starViewport.set(captureWidth,captureHeight);
         renderer.render(scene,camera);
         renderer.setRenderTarget(null);
+        deepSkyRenderer.starViewport.copy(deepSkyViewport);
         blackhole.lensingMaterial.uniforms.sceneTexture.value=blackhole.captureTarget.texture;
         blackhole.lensingMaterial.uniforms.sceneDepthTexture.value=blackhole.captureTarget.depthTexture;
         blackhole.lensingMesh.visible=true;
@@ -5450,6 +5619,7 @@
     }
     if(profileEnabled)profileRender=performance.now();
     renderer.render(scene, camera);
+    if(landingAreaReady)hideLoader();
     if(profileEnabled&&elapsed>5){
       const now=performance.now(),a=profile.frames++? .025:1;
       profile.frameMs+=(frameDt*1000-profile.frameMs)*a;

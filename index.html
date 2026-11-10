@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#05070c">
 <title>Godman</title>
-<link rel="stylesheet" href="styles/game.css?v=20261103.9">
+<link rel="stylesheet" href="styles/game.css?v=20261110.43">
 <link rel="preload" as="image" href="assets/earth/earth_day_2048.jpg">
 <link rel="preload" as="image" href="assets/earth/earth_specular_2048.jpg">
 <link rel="preload" as="image" href="assets/earth/earth_clouds_1024.png">
@@ -39,6 +39,7 @@
 <div id="crosshair"></div>
 <div id="youAreHere" aria-hidden="true">You are here</div>
 <div id="toast"></div>
+<a id="milkyWayCredit" href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" hidden>Milky Way imagery · ESO/S. Brunier</a>
 
 <div id="loader">
   <h1>GODMAN</h1>
@@ -86,8 +87,6 @@
     <span class="key">F</span> find a planet, star, black hole, nebula, or galaxy and smoothly inspect it<br>
     <span class="key">H</span> hide/show orbit paths and all labels inside the universe (the HUD stays visible)<br>
     <span class="key">T</span> lock onto the planet you are looking at — the camera tracks it and high-speed approaches brake for landing<br>
-    <span class="key">Left-click</span> call an asteroid strike — it leaves a realistic impact crater (a rock can't punch through a world)<br>
-    <span class="key">L</span> pull up the orbital laser, then hold <span class="key">Left-click</span> — sustained fire melts a collision-matched basin into the surface<br>
     <span class="key">Shift</span> run on the ground · hold in flight to brake and maintain altitude. Release to coast<br>
     <span class="key">M</span> instant boost to 39,937.7 km/h — Apollo 10, the fastest humans have ever travelled<br>
     <span class="key">R</span> respawn on Earth · <span class="key">Esc</span> open this menu<br><br>
@@ -106,11 +105,11 @@
 <script src="vendor/loaders/GLTFLoader.r128.js" defer></script>
 <script src="src/config.js?v=20260826.3" defer></script>
 <script src="src/data/nasa-exoplanets.js?v=20260901.4" defer></script>
-<script src="src/runtime/adaptive-quality.js?v=20260826.3" defer></script>
-<script src="src/runtime/atmosphere.js?v=20261103.3" defer></script>
-<script src="src/runtime/physical-lighting.js?v=20261103.10" defer></script>
-<script src="src/runtime/planetary-sky.js?v=20261103.5" defer></script>
-<script src="src/runtime/deep-sky.js?v=20260903.25" defer></script>
+<script src="src/runtime/adaptive-quality.js?v=20261110.41" defer></script>
+<script src="src/runtime/atmosphere.js?v=20261109.40" defer></script>
+<script src="src/runtime/physical-lighting.js?v=20261109.40" defer></script>
+<script src="src/runtime/planetary-sky.js?v=20261109.37" defer></script>
+<script src="src/runtime/deep-sky.js?v=20261110.43.3" defer></script>
 <script src="src/runtime/launch-sequence.js?v=20261104.31.2" defer></script>
 <script src="src/runtime/character-motion.js?v=20261104.31.2" defer></script>
 <script src="src/data/athletic-run.js?v=20261103.2" defer></script>
@@ -119,8 +118,9 @@
 <script src="src/runtime/character-controller.js?v=20261104.31.2" defer></script>
 <script src="src/runtime/propulsor-rig.js?v=20261104.31.2" defer></script>
 <script src="src/runtime/flight-dynamics.js?v=20261104.31.2" defer></script>
-<script src="src/runtime/terrain-surface.js?v=20261103.8" defer></script>
+<script src="src/runtime/terrain-surface.js?v=20261110.42" defer></script>
 <script src="src/runtime/shoulder-flashlight.js?v=20261103.10" defer></script>
-<script src="src/game.js?v=20261104.31.2" defer></script>
+<script src="src/runtime/earth-ground.js?v=20261109.33" defer></script>
+<script src="src/game.js?v=20261110.43.4" defer></script>
 </body>
 </html>

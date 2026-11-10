@@ -1,6 +1,215 @@
 (function () {
   'use strict';
 
+  function makeGalacticDustMap(THREE){
+    const size=256,pixels=new Uint8Array(size*size*4);
+    function value(x,y,period){
+      let n=Math.imul(x%period+1,374761393)^Math.imul(y%period+1,668265263)^Math.imul(period,2246822519);
+      n=Math.imul(n^(n>>>13),1274126177);
+      return ((n^(n>>>16))>>>0)/4294967296;
+    }
+    function noise(x,y,period){
+      const i=Math.floor(x),j=Math.floor(y);
+      let u=x-i,v=y-j;
+      u=u*u*(3-2*u);v=v*v*(3-2*v);
+      const a=value(i,j,period)*(1-u)+value(i+1,j,period)*u;
+      const b=value(i,j+1,period)*(1-u)+value(i+1,j+1,period)*u;
+      return a*(1-v)+b*v;
+    }
+    for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+      const coarse=noise(x*5/size,y*5/size,5);
+      const knots=noise(x*13/size,y*13/size,13);
+      const wisps=noise(x*43/size,y*43/size,43);
+      const i=(y*size+x)*4;
+      pixels[i]=255*(coarse*.5+knots*.32+wisps*.18);
+      pixels[i+1]=255*(knots*.68+wisps*.32);
+      pixels[i+2]=255*coarse;
+      pixels[i+3]=255;
+    }
+    const map=new THREE.DataTexture(pixels,size,size);
+    map.wrapS=map.wrapT=THREE.RepeatWrapping;
+    map.minFilter=THREE.LinearMipmapLinearFilter;
+    map.magFilter=THREE.LinearFilter;
+    map.generateMipmaps=true;
+    map.needsUpdate=true;
+    return map;
+  }
+
+  function makeGalacticDiskMap(THREE){
+    const size=512,pixels=new Uint8Array(size*size*4);
+    const pitch=[.2234,.2025,.2356,.1885].map(Math.tan),phase=[.17,1.71,3.34,4.92];
+    const barAngle=29*Math.PI/180,barCos=Math.cos(barAngle),barSin=Math.sin(barAngle);
+    for(let j=0;j<size;j++)for(let i=0;i<size;i++){
+      const x=((i+.5)/size-.5)*2.3,z=((j+.5)/size-.5)*2.3;
+      const r=Math.hypot(x,z),azimuth=Math.atan2(z,x);
+      const winding=Math.log(Math.max(.055,r)/.50),width=.12+.033/Math.max(.18,r);
+      let arms=0;
+      for(let lane=0;lane<4;lane++){
+        const ridge=phase[lane]-winding/pitch[lane]+.12*Math.sin(r*22+phase[lane])+.065*Math.sin(r*47-phase[lane]);
+        const delta=(azimuth-ridge)/(2*Math.PI),d=(delta-Math.round(delta))*2*Math.PI;
+        arms=Math.max(arms,Math.exp(-.5*(d/width)**2)*(lane%2?.61:1));
+      }
+      const bx=x*barCos+z*barSin,bz=-x*barSin+z*barCos;
+      const bulge=Math.exp(-Math.hypot(bx/.145,bz/.068)*1.5);
+      const taper=1-THREE.MathUtils.smoothstep(r,.78,1.08);
+      const disk=Math.exp(-r/.31)*taper*(.43+.57*arms*THREE.MathUtils.smoothstep(r,.12,.30));
+      const k=(j*size+i)*4;
+      pixels[k]=Math.round(disk*255);
+      pixels[k+1]=Math.round(bulge*255);
+      pixels[k+2]=Math.round(taper*Math.exp(-r/.83)*255);
+      pixels[k+3]=255;
+    }
+    const texture=new THREE.DataTexture(pixels,size,size);
+    texture.generateMipmaps=true;
+    texture.minFilter=THREE.LinearMipmapLinearFilter;
+    texture.magFilter=THREE.LinearFilter;
+    texture.needsUpdate=true;
+    return texture;
+  }
+
+  // Evaluate coverage at the actual pixel center. GL point coordinates alone
+  // inherit the rasterizer's rounded center and make faint stars blink in pans.
+  const pointCoverageVertex=`
+    uniform vec2 starViewport;
+    varying vec2 starCenter;
+    varying float starSigma;
+    void placeStar(float sigma){
+      starCenter=(gl_Position.xy/gl_Position.w*.5+.5)*starViewport;
+      starSigma=sigma;
+      gl_PointSize=5.0;
+    }
+  `;
+  const pointCoverageFragment=`
+    varying vec2 starCenter;
+    varying float starSigma;
+    float starCoverage(){
+      vec2 pixelOffset=gl_FragCoord.xy-starCenter;
+      vec2 offset=pixelOffset/starSigma;
+      float edge=1.-smoothstep(1.5,2.,max(abs(pixelOffset.x),abs(pixelOffset.y)));
+      return exp(-.5*dot(offset,offset))*edge*.34/(starSigma*starSigma);
+    }
+  `;
+
+  const milkyVolumeFragment=`
+    varying vec2 screenRay;
+    uniform mat4 inverseProjection;
+    uniform mat3 galacticCameraBasis;
+    uniform vec3 galaxyObserver;
+    uniform sampler2D diskMap,galacticDust,galacticPanorama;
+    uniform float visibility,panoramaMix;
+
+    void showGalaxy(vec3 light){
+      if(max(light.r,max(light.g,light.b))<.00005)discard;
+      gl_FragColor=vec4(light,visibility);
+      #include <tonemapping_fragment>
+      #include <encodings_fragment>
+    }
+
+    void main(){
+      vec4 view=inverseProjection*vec4(screenRay,0.,1.);
+      vec3 ray=normalize(galacticCameraBasis*(view.xyz/view.w));
+      vec3 photo=vec3(0.);
+      if(panoramaMix>0.){
+        const float PI=3.14159265359;
+        vec2 uv=vec2(.5-atan(ray.z,-ray.x)/(2.*PI),.5+asin(clamp(ray.y,-1.,1.))/PI);
+        #ifdef TEXTURE_LOD_EXT
+          vec2 dx=dFdx(uv),dy=dFdy(uv);
+          dx.x-=floor(dx.x+.5);
+          dy.x-=floor(dy.x+.5);
+          vec3 photograph=texture2DGradEXT(galacticPanorama,uv,dx,dy).rgb;
+        #else
+          vec3 photograph=texture2D(galacticPanorama,uv).rgb;
+        #endif
+        photo=pow(photograph,vec3(2.2))*.57*panoramaMix;
+        if(panoramaMix>=.999){showGalaxy(photo);return;}
+      }
+      vec3 origin=galaxyObserver;
+      float along=-dot(origin,ray);
+      vec3 closest=origin+ray*along;
+      float chord=1.15*1.15-dot(closest,closest);
+      if(chord<=0.){showGalaxy(photo);return;}
+      float halfChord=sqrt(chord);
+      float start=max(0.,along-halfChord),end=along+halfChord;
+      // The luminous disk is thin. Intersect the ray with its vertical bounds
+      // so oblique and exterior views spend samples inside the actual disk.
+      if(abs(ray.y)>.00001){
+        vec2 slab=(vec2(-.16,.16)-origin.y)/ray.y;
+        start=max(start,min(slab.x,slab.y));
+        end=min(end,max(slab.x,slab.y));
+      }else if(abs(origin.y)>.16){showGalaxy(photo);return;}
+      float ds=(end-start)/20.;
+      if(ds<=0.){showGalaxy(photo);return;}
+
+      // A nearby dust complex is seen in silhouette against the integrated
+      // disk. Keep its smaller filaments instead of averaging them away
+      // over the full length of the sightline.
+      float localDisk=(1.-smoothstep(.76,1.08,length(origin.xz)))*
+        (1.-smoothstep(.016,.065,abs(origin.y)));
+      float foregroundDistance=min(.11,(end-start)*.46);
+      float foregroundStep=floor(foregroundDistance/ds);
+      vec3 nearby=origin+ray*(start+foregroundDistance);
+      vec3 broadDust=texture2D(galacticDust,nearby.xz*4.7+vec2(.22,.58)).rgb;
+      vec3 fineDust=texture2D(galacticDust,nearby.xz*24.6+vec2(.49,.14)).rgb;
+      float nearbyHeight=abs(nearby.y-(broadDust.b-.5)*.025-(fineDust.g-.5)*.006);
+      float nearbyLane=smoothstep(.38,.67,.70*broadDust.r+.30*fineDust.r);
+      float foregroundTau=localDisk*nearbyLane*exp(-nearbyHeight/.0065)*2.15;
+
+      vec3 radiance=vec3(0.);
+      float transmission=1.;
+      for(int i=0;i<20;i++){
+        vec3 p=origin+ray*(start+(float(i)+.5)*ds);
+        vec3 structure=texture2D(diskMap,p.xz/2.3+.5).rgb;
+        vec3 clouds=texture2D(galacticDust,p.xz*3.1+vec2(.37,.81)).rgb;
+        vec3 filaments=texture2D(galacticDust,p.xz*13.6+vec2(.19,.64)).rgb;
+        float midplane=(clouds.b-.5)*.024+(filaments.g-.5)*.009;
+        float y=abs(p.y-midplane);
+        float diffuse=structure.r*(exp(-abs(p.y)/.019)+.23*exp(-abs(p.y)/.052));
+        diffuse*=mix(.48,1.34,smoothstep(.24,.76,clouds.g*.64+filaments.r*.36));
+        float bulge=structure.g*exp(-abs(p.y)/.053)*.78;
+        float dust=smoothstep(.31,.71,clouds.r*.66+filaments.r*.34);
+        float tau=ds*exp(-y/.0075)*structure.b*mix(.9,22.,dust);
+        if(float(i)==foregroundStep)tau+=foregroundTau;
+        float remaining=exp(-tau);
+        radiance+=transmission*sqrt(remaining)*ds*(
+          diffuse*vec3(.63,.68,.79)+bulge*vec3(1.,.79,.58)
+        );
+        transmission*=remaining;
+      }
+      showGalaxy(photo+radiance*.91*(1.-panoramaMix));
+    }
+  `;
+
+  const milkyWayDustGLSL=`
+    uniform sampler2D galacticDust;
+    uniform vec3 galaxyObserver;
+
+    // Integrate the vertical density of the dust disk over the sightline.
+    // Each star keeps its true position and receives its own extinction.
+    float dustIntegral(float y,float scaleHeight){
+      return sign(y)*scaleHeight*(1.0-exp(-abs(y)/scaleHeight));
+    }
+    vec3 galacticTransmission(vec3 star){
+      float nearY=galaxyObserver.y,farY=star.y;
+      float heightChange=farY-nearY;
+      float midplane=abs(heightChange)>.0001?clamp(-nearY/heightChange,0.0,1.0):.5;
+      // Sample the foreground side of the path so neighboring rays through
+      // the same dust complex reveal a continuous lane across the star field.
+      vec2 foreground=mix(galaxyObserver.xz,star.xz,mix(.20,midplane,.62));
+      vec3 field=texture2D(galacticDust,foreground*3.7+vec2(.37,.81)).rgb;
+      float ridge=(field.b-.5)*.017+(field.g-.5)*.006;
+      float scaleHeight=mix(.0038,.0072,field.g);
+      nearY-=ridge;
+      farY-=ridge;
+      float meanDensity=abs(heightChange)>.0001
+        ? (dustIntegral(farY,scaleHeight)-dustIntegral(nearY,scaleHeight))/heightChange
+        : exp(-abs(nearY)/scaleHeight);
+      float dust=smoothstep(.32,.69,field.r);
+      float disk=1.0-smoothstep(.57,1.10,length(foreground));
+      float column=clamp(length(star-galaxyObserver)*meanDensity,0.0,1.2);
+      return exp(-column*dust*disk*vec3(6.0,8.3,10.7));
+    }
+  `;
+
   class DeepSkyRenderer {
     constructor(THREE) {
       this.THREE = THREE;
@@ -10,6 +219,10 @@
       this.backdrops = [];
       this.veils = [];
       this.cameraWorld = new THREE.Vector3();
+      this.starViewport = new THREE.Vector2(1,1);
+      this.skyRotation = new THREE.Quaternion();
+      this.skyMatrix = new THREE.Matrix4();
+      this.solarPosition = new THREE.Vector3(.513,0,0);
       this.densityScale = 1;
       this.targetDensityScale = 1;
     }
@@ -49,13 +262,10 @@
         const classLum=tint<.20?.32:tint<.53?.55:tint<.78?.8:tint<.94?1.05:1.4;
         const brightness=(.58+random()*.34)*classLum;
         colors[k]=color.r*brightness;colors[k+1]=color.g*brightness;colors[k+2]=color.b*brightness;
-        // Most sources remain sub-pixel stars. A tiny fraction read as remote
-        // unresolved galaxies without using image cards or extra draw calls.
+        // A tiny fraction read as remote unresolved galaxies without using
+        // image cards or extra draw calls.
         const distantGalaxy=random()<.012;
-        // Sub-pixel GL points snap between pixel centres while the camera
-        // rotates and look like false twinkling. Keep ordinary stars just over
-        // one physical pixel and lower their opacity to retain the same sky
-        // luminance with stable antialiased coverage.
+        // Vary the width and flux of the continuous pixel filter.
         sizes[i]=distantGalaxy?1.8+random()*1.55:1.02+Math.pow(random(),4)*1.08;
         alphas[i]=distantGalaxy?.46+random()*.32:.22+random()*.38;
       }
@@ -66,18 +276,19 @@
       geometry.setAttribute('pointAlpha',new THREE.BufferAttribute(alphas,1));
       geometry.boundingSphere=new THREE.Sphere(new THREE.Vector3(),radius*1.01);
       const material=new THREE.ShaderMaterial({
-        uniforms:{visibility:{value:0}},
+        uniforms:{visibility:{value:0},starViewport:{value:this.starViewport}},
         vertexShader:[
           '#include <common>','#include <logdepthbuf_pars_vertex>',
           'attribute float pointSize,pointAlpha;attribute vec3 color;uniform float visibility;',
-          'varying vec3 vColor;varying float vAlpha;',
-          'void main(){vColor=color;vAlpha=pointAlpha*visibility;gl_PointSize=pointSize;',
-          'gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);','#include <logdepthbuf_vertex>','}'
+          'varying vec3 vColor;varying float vAlpha;',pointCoverageVertex,
+          'void main(){vColor=color;vAlpha=pointAlpha*visibility;',
+          'gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);',
+          'placeStar(.44+pointSize*.16);','#include <logdepthbuf_vertex>','}'
         ].join('\n'),
         fragmentShader:[
-          '#include <common>','#include <logdepthbuf_pars_fragment>','varying vec3 vColor;varying float vAlpha;',
-          'void main(){','#include <logdepthbuf_fragment>','vec2 q=gl_PointCoord-.5;float d=dot(q,q);if(d>.25)discard;',
-          'float a=smoothstep(.25,.025,d)*vAlpha;float l=dot(vColor,vec3(.2126,.7152,.0722));',
+          '#include <common>','#include <logdepthbuf_pars_fragment>','varying vec3 vColor;varying float vAlpha;',pointCoverageFragment,
+          'void main(){','#include <logdepthbuf_fragment>',
+          'float a=starCoverage()*vAlpha;float l=dot(vColor,vec3(.2126,.7152,.0722));',
           'vec3 c=max(vec3(0.0),mix(vec3(l),vColor,1.42));gl_FragColor=vec4(c,a);',
           '#include <tonemapping_fragment>','#include <encodings_fragment>','}'
         ].join('\n'),
@@ -286,6 +497,7 @@
       geometry.boundingSphere=new THREE.Sphere(new THREE.Vector3(),spec.radius*1.08);
       geometry.setDrawRange(0,initialCount);
       const material=new THREE.ShaderMaterial({
+        defines:independentSeeds?{MILKY_WAY:1}:{},
         uniforms:{
           radius:{value:spec.radius},seed:{value:spec.seed||1},arms:{value:spec.arms||4},
           twist:{value:spec.twist||5.6},thickness:{value:spec.thickness||.035},
@@ -295,7 +507,9 @@
           barLength:{value:spec.barLength||.48},barAngle:{value:spec.barAngle||0},diskScale:{value:spec.diskScale||.16},
           thinScaleHeight:{value:spec.thinScaleHeight||spec.thickness||.035},thickScaleHeight:{value:spec.thickScaleHeight||spec.thickness*3||.09},
           coreColor:{value:new THREE.Color(spec.core||0xffd5a2)},armColor:{value:new THREE.Color(spec.arm||0xa9caff)},
-          dustColor:{value:new THREE.Color(spec.dust||0x65565c)},visibility:{value:0},densityCompensation:{value:1}
+          dustColor:{value:new THREE.Color(spec.dust||0x65565c)},visibility:{value:0},densityCompensation:{value:1},
+          brightness:{value:spec.brightness??1},saturation:{value:independentSeeds?.84:1.38},
+          starViewport:{value:this.starViewport}
         },
         vertexShader:[
           '#include <common>','#include <logdepthbuf_pars_vertex>',
@@ -303,6 +517,8 @@
           'uniform float milkyMorphology,haloFraction,barLength,barAngle,diskScale,thinScaleHeight,thickScaleHeight;',
           'uniform vec3 coreColor,armColor,dustColor;','varying vec3 vGalaxyColor;varying float vGalaxyAlpha;',
           independentSeeds?'attribute vec4 randomSeed;':'',
+          independentSeeds?pointCoverageVertex:'',
+          independentSeeds?milkyWayDustGLSL:'',
           independentSeeds?
             'float h(float salt){vec4 p=fract(randomSeed+salt*vec4(.1031,.11369,.13787,.09987)+seed*vec4(.0013,.0017,.0019,.0023));p+=dot(p,p.wzxy+33.33);return fract((p.x+p.y)*(p.z+p.w));}':
             'float h(float salt){float n=position.x+1.0+salt;float cell=floor(n/2048.0);float local=n-cell*2048.0;vec3 p=fract(vec3(local,cell,local+cell)*vec3(.1031,.1030,.0973)+vec3(seed*.0137,seed*.0191,seed*.0113));p+=dot(p,p.yzx+33.33);return fract((p.x+p.y)*p.z);}',
@@ -341,16 +557,17 @@
           '      radial=-log(max(1e-5,h(2.1)*h(3.7)))*diskScale;',
           '      radial=mix(radial,.38+pow(h(509.0),.78)*.77,step(.86,h(503.0)));radial=min(radial,1.18);',
           '    }else radial=.035+pow(h(2.1),.68)*.965;',
-          // Roughly one fifth of the disk is diffuse/inter-arm population.
-          // It removes the artificial clear strips seen edge-on while the
-          // remaining stars still resolve the logarithmic spiral arms.
+          // The Milky Way mixes a broad older disk with clumpy arm ridges.
+          // Keep the same distribution in milkySamplePosition for navigation.
           '    float armTheta;',
           '    if(milkyMorphology>.5){',
           // Logarithmic arm ridges: Scutum-Centaurus and Perseus dominate the
           // old stellar light; Sagittarius-Carina and Norma-Outer are softer.
           '      float pitch=lane<.5?.2234:lane<1.5?.2025:lane<2.5?.2356:.1885;',
           '      float phase=lane<.5?.17:lane<1.5?1.71:lane<2.5?3.34:4.92;',
-          '      armTheta=phase-log(max(.055,radial)/.50)/tan(pitch)+bell(8.0)*(.018+.022/max(.13,radial));',
+          '      armTheta=phase-log(max(.055,radial)/.50)/tan(pitch)+bell(8.0)*(.055+.040/max(.13,radial));',
+          '      armTheta+=.12*sin(radial*22.0+phase)+.065*sin(radial*47.0-phase);',
+          '      diffuse=step(.46+.13*smoothstep(.13,.30,radial),h(61.0));',
           // The Local (Orion) Arm is a finite ~6 kpc spur at the Sun's radius,
           // rather than a fifth spiral extending around the whole Galaxy.
           '      if(localArm>.5){radial=.385+pow(h(427.0),.82)*.285;armTheta=-log(radial/.513)/tan(.2025)+bell(433.0)*.045;diffuse=0.0;}',
@@ -371,15 +588,23 @@
           '      float flare=1.0+pow(max(0.0,(radial-.48)/.62),1.45)*mix(1.55,3.0,thick);',
           '      vertical=(h(197.0)<.5?-1.0:1.0)*(-log(max(.002,h(19.0))))*scale*flare;',
           '      float warp=pow(max(0.0,(radial-.52)/.58),1.55)*.044*sin(theta-.38);vertical+=warp;',
-          '      populationAlpha*=mix(1.0,.54,thick);if(lane==1.0||lane==3.0)populationAlpha*=.72;',
+          '      populationAlpha*=mix(1.0,.68,thick);if(lane==1.0||lane==3.0)populationAlpha*=mix(.58,1.0,diffuse);',
           '    }else{float flare=(.22+.78*radial)*mix(1.0,1.7,diffuse);vertical=(bell(19.0)+bell(193.0)*.28)*thickness*flare;}',
           '    p=vec3(cos(theta)*radial,vertical,sin(theta)*radial*ellipticity);',
           '    float young=pow(max(0.0,1.0-radial),.7),dustLane=step(.84,h(31.0));',
           '    vGalaxyColor=mix(armColor,coreColor,young*.58);',
           '    float hot=pow(h(103.0),8.0),redGiant=pow(h(137.0),11.0),hII=step(.965,h(151.0))*(1.0-young*.35);',
           '    vGalaxyColor=mix(vGalaxyColor,vec3(.42,.68,1.0),hot*.62);vGalaxyColor=mix(vGalaxyColor,vec3(1.0,.42,.22),redGiant*.5);',
-          '    vGalaxyColor=mix(vGalaxyColor,vec3(1.0,.24,.48),hII*.38);vGalaxyColor=mix(vGalaxyColor,dustColor,dustLane*.68);',
+          '    vGalaxyColor=mix(vGalaxyColor,vec3(1.0,.24,.48),hII*.38);',
+          '    if(milkyMorphology<.5)vGalaxyColor=mix(vGalaxyColor,dustColor,dustLane*.68);',
           '    brightness=.48+h(47.0)*.78;vGalaxyColor*=brightness;',
+          '  }',
+          '  vec4 mvPosition=modelViewMatrix*vec4(p*radius,1.0);gl_Position=projectionMatrix*mvPosition;',
+          '#include <logdepthbuf_vertex>',
+          // Position still comes from the same catalogue seed. Skip shading
+          // and dust sampling for points outside the camera's viewport.
+          '  if(gl_Position.w<=0.0||max(abs(gl_Position.x),abs(gl_Position.y))>gl_Position.w*1.02){',
+          '    vGalaxyAlpha=0.0;gl_PointSize=1.0;return;',
           '  }',
           // Stellar-population tinting prevents a dense galaxy from becoming
           // a monochrome white particle cloud: cool O/B stars are rare, warm
@@ -396,22 +621,38 @@
           '  spectralTint=mix(spectralTint,vec3(1.0,.55,.28),oldPopulation*(.45+.28*h(263.0)));',
           '  float spectralMix=mix(.32+.16*h(251.0),.56+.14*h(251.0),oldPopulation);',
           '  vGalaxyColor=mix(vGalaxyColor,spectralTint,spectralMix)*spectralLum;',
-          '  vec4 mvPosition=modelViewMatrix*vec4(p*radius,1.0);gl_Position=projectionMatrix*mvPosition;',
+          '#ifdef MILKY_WAY',
+          '  float starCloud=texture2D(galacticDust,p.xz*2.1+vec2(.61,.27)).g;',
+          '  vGalaxyColor*=galacticTransmission(p)*mix(.52,1.16,smoothstep(.24,.78,starCloud));',
+          '#endif',
           '  float coreBoost=1.0+2.1*max(0.0,.18-radial)/.18;',
           '  float magnitude=.72+pow(h(389.0),9.0)*2.45;',
-          '  gl_PointSize=clamp(radius*pointScale*650.0/max(1.0,-mvPosition.z)*coreBoost*magnitude,.38,3.85);',
+          '#ifdef MILKY_WAY',
+          '  magnitude=.50+pow(h(389.0),7.0)*1.85;',
+          '  populationAlpha*=mix(.45,1.4,pow(h(181.0),2.0));',
+          '#endif',
+          '  float size=clamp(radius*pointScale*650.0/max(1.0,-mvPosition.z)*coreBoost*magnitude,.38,3.85);',
+          '#ifdef MILKY_WAY',
+          '  placeStar(.45+size*.14);',
+          '#else',
+          '  gl_PointSize=size;',
+          '#endif',
           // Low optical intensity keeps dense populations from becoming an
           // opaque flat silhouette while preserving their temperature colour.
-          '  vGalaxyAlpha=visibility*(.08+.22*h(71.0))*edgeFade*populationAlpha*densityCompensation;','#include <logdepthbuf_vertex>','}'
+          '  vGalaxyAlpha=visibility*(.08+.22*h(71.0))*edgeFade*populationAlpha*densityCompensation;','}'
         ].join('\n'),
         fragmentShader:[
-          '#include <common>','#include <logdepthbuf_pars_fragment>','varying vec3 vGalaxyColor;varying float vGalaxyAlpha;',
-          'void main(){','#include <logdepthbuf_fragment>','vec2 q=gl_PointCoord-.5;float d=dot(q,q);if(d>.25)discard;',
-          // Additive blending already multiplies source colour by alpha. The
-          // former premultiplication applied alpha twice, erasing coloured
-          // single stars and leaving only white overlap in dense regions.
-          'float a=smoothstep(.25,.015,d)*vGalaxyAlpha;float l=dot(vGalaxyColor,vec3(.2126,.7152,.0722));',
-          'vec3 c=max(vec3(0.0),mix(vec3(l),vGalaxyColor,1.38));gl_FragColor=vec4(c,a);',
+          '#include <common>','#include <logdepthbuf_pars_fragment>','uniform float brightness,saturation;varying vec3 vGalaxyColor;varying float vGalaxyAlpha;',
+          independentSeeds?pointCoverageFragment:'',
+          'void main(){','#include <logdepthbuf_fragment>',
+          '#ifdef MILKY_WAY',
+          'float a=starCoverage()*vGalaxyAlpha;',
+          '#else',
+          'vec2 q=gl_PointCoord-.5;float d=dot(q,q);if(d>.25)discard;',
+          'float a=smoothstep(.25,.015,d)*vGalaxyAlpha;',
+          '#endif',
+          'float l=dot(vGalaxyColor,vec3(.2126,.7152,.0722));',
+          'vec3 c=max(vec3(0.0),mix(vec3(l),vGalaxyColor,saturation));gl_FragColor=vec4(c*brightness,a);',
           '#include <tonemapping_fragment>','#include <encodings_fragment>','}'
         ].join('\n'),
         // Alpha compositing preserves stellar temperature and dust colours.
@@ -421,6 +662,33 @@
       const points=new THREE.Points(geometry,material);
       points.rotation.set(spec.rotationX||0,spec.rotationY||0,spec.rotationZ||0);
       if(spec.quaternion)points.quaternion.copy(spec.quaternion);
+      const observer=independentSeeds?new THREE.Vector3():null;
+      let volume=null;
+      if(observer){
+        material.uniforms.galacticDust={value:makeGalacticDustMap(THREE)};
+        material.uniforms.galaxyObserver={value:observer};
+        const volumeMaterial=new THREE.ShaderMaterial({
+          uniforms:{
+            inverseProjection:{value:new THREE.Matrix4()},
+            galacticCameraBasis:{value:new THREE.Matrix3()},
+            galaxyObserver:{value:observer},
+            diskMap:{value:makeGalacticDiskMap(THREE)},
+            galacticDust:material.uniforms.galacticDust,
+            galacticPanorama:{value:null},
+            panoramaMix:{value:0},
+            visibility:{value:0}
+          },
+          vertexShader:'varying vec2 screenRay;void main(){screenRay=position.xy;gl_Position=vec4(position.xy,1.,1.);}',
+          fragmentShader:milkyVolumeFragment,
+          extensions:{derivatives:true,shaderTextureLOD:true},
+          transparent:true,depthTest:true,depthWrite:false,blending:THREE.AdditiveBlending
+        });
+        volume=new THREE.Mesh(new THREE.PlaneGeometry(2,2),volumeMaterial);
+        volume.frustumCulled=false;
+        volume.renderOrder=-45;
+        volume.visible=false;
+        points.add(volume);
+      }
       // With 100 galaxies, culling off-screen volumes is essential. The manual
       // physical bounding sphere remains stable under the game's floating origin.
       points.renderOrder=32;points.frustumCulled=true;
@@ -431,15 +699,18 @@
         archiveData:{distanceLy:spec.distanceLy,estimatedStars:spec.estimatedStars||null,source:spec.source||'NASA'}};
       const capacityLimit=Math.min(count,spec.capacityLimit||(spec.homeGalaxy?260000:48000));
       this.galaxies.push({body:body,mesh:points,material:material,geometry:geometry,maxCount:count,capacity:initialCount,
-        capacityLimit:capacityLimit,residentCount:Math.min(capacityLimit,spec.residentCount||initialCount),
-        homeGalaxy:!!spec.homeGalaxy,independentSeeds:independentSeeds,buildIndependentSeeds:buildIndependentSeeds,
+        capacityLimit:capacityLimit,volume,panoramaUrl:spec.panoramaUrl,panoramaRequested:false,panoramaStart:null,
+        observer,inverseRotation:observer?points.quaternion.clone().invert():null,
         expanding:false,lastDrawCount:0,lastLodTime:-Infinity});
       if(spec.homeGalaxy)this.homeGalaxyBody=body;
       return body;
     }
 
-    update(time, observer, cameraOffset, visibility) {
+    update(time, observer, camera, visibility, viewport) {
+      const cameraOffset=camera.position;
       this.cameraWorld.copy(observer).add(cameraOffset);
+      this.starViewport.copy(viewport);
+      let panoramaVisible=false;
       this.densityScale+=(this.targetDensityScale-this.densityScale)*.055;
       // Overview mode can move the camera many galactic radii away while the
       // player remains on Earth. Sky-shell visibility must therefore follow
@@ -490,29 +761,61 @@
         entry.mesh.visible=layerVisibility>.002;
       }
       for (const entry of this.galaxies) {
+        entry.mesh.visible=visibility>.025;
+        if(!entry.mesh.visible)continue;
         const cameraDistance=this.cameraWorld.distanceTo(entry.body.center);
+        if(entry.volume){
+          entry.observer.copy(this.cameraWorld).sub(entry.body.center)
+            .divideScalar(entry.body.r).applyQuaternion(entry.inverseRotation);
+          const volumeUniforms=entry.volume.material.uniforms;
+          const homeRadius=cameraDistance/entry.body.r;
+          const volumeFade=1-this.THREE.MathUtils.smoothstep(homeRadius,18,35);
+          const fromSolar=entry.observer.distanceTo(this.solarPosition);
+          if(entry.panoramaUrl&&!entry.panoramaRequested&&fromSolar<.085){
+            entry.panoramaRequested=true;
+            new this.THREE.TextureLoader().load(entry.panoramaUrl,texture=>{
+              texture.wrapS=this.THREE.RepeatWrapping;
+              volumeUniforms.galacticPanorama.value=texture;
+            },undefined,()=>{}); // The procedural volume remains available offline if the image is missing.
+          }
+          if(volumeUniforms.galacticPanorama.value&&entry.panoramaStart===null)entry.panoramaStart=time;
+          const photoMix=entry.panoramaStart===null?0:
+            (1-this.THREE.MathUtils.smoothstep(fromSolar,.018,.085))*
+            this.THREE.MathUtils.smoothstep(time-entry.panoramaStart,0,.55);
+          volumeUniforms.panoramaMix.value=photoMix;
+          entry.volume.visible=volumeFade*visibility>.005;
+          volumeUniforms.visibility.value=visibility*volumeFade;
+          panoramaVisible=panoramaVisible||entry.volume.visible&&photoMix>.002;
+          if(entry.volume.visible){
+            volumeUniforms.inverseProjection.value.copy(camera.projectionMatrixInverse);
+            this.skyRotation.copy(entry.inverseRotation).multiply(camera.quaternion);
+            volumeUniforms.galacticCameraBasis.value.setFromMatrix4(this.skyMatrix.makeRotationFromQuaternion(this.skyRotation));
+          }
+          // Keep one stable set of resolved stars. Unresolved stellar light
+          // belongs to the continuous volume and cannot flicker with GPU load.
+          const resolvedFade=1-.85*this.THREE.MathUtils.smoothstep(homeRadius,2.8,15);
+          entry.material.uniforms.visibility.value=visibility*.68*resolvedFade*(1-.72*photoMix);
+          continue;
+        }
         const distance=Math.max(entry.body.r*.02,cameraDistance);
         const angular=entry.body.r/distance;
         // The deterministic population is streamed to the GPU on approach,
         // while real angular size controls how many samples are rasterized. A
         // galaxy only reveals all of its stars after the player reaches it.
-        const inside=entry.homeGalaxy&&cameraDistance<entry.body.r;
         const lod=angular>.18?1:angular>.07?.62:angular>.02?.24:angular>.006?.08:.018;
-        const baseDesired=inside?entry.residentCount:
-          Math.min(entry.capacityLimit,Math.max(384,Math.floor(entry.capacityLimit*lod)));
+        const baseDesired=Math.min(entry.capacityLimit,Math.max(384,Math.floor(entry.capacityLimit*lod)));
         const desiredCount=Math.max(384,Math.floor(baseDesired*this.densityScale));
         // Far galaxies start with a compact sample. Crossing their approach
         // threshold streams the complete deterministic population during an
         // idle slice, so millions of points never block ordinary planet play.
-        const targetCapacity=inside?entry.residentCount:entry.capacityLimit;
-        const shouldExpand=(inside||angular>.07)&&entry.capacity<targetCapacity;
+        const targetCapacity=entry.capacityLimit;
+        const shouldExpand=angular>.07&&entry.capacity<targetCapacity;
         if(shouldExpand&&!entry.expanding){
           entry.expanding=true;
           const expand=()=>{
             const ids=new Float32Array(targetCapacity);
             for(let i=0;i<targetCapacity;i++)ids[i]=i;
             entry.geometry.setAttribute('position',new THREE.BufferAttribute(ids,1));
-            if(entry.independentSeeds)entry.geometry.setAttribute('randomSeed',new THREE.BufferAttribute(entry.buildIndependentSeeds(targetCapacity),4,true));
             entry.capacity=targetCapacity;entry.expanding=false;entry.lastDrawCount=-1;
           };
           if(typeof requestIdleCallback==='function')requestIdleCallback(expand,{timeout:900});
@@ -531,10 +834,10 @@
         // Compensate external views by their current sample count; inside the
         // disk, isolated nearby stellar points retain full visibility.
         const activeSamples=Math.max(384,entry.lastDrawCount>0?entry.lastDrawCount:desiredCount);
-        entry.material.uniforms.densityCompensation.value=inside?1:Math.max(.08,Math.min(1,Math.sqrt(90000/activeSamples)));
+        entry.material.uniforms.densityCompensation.value=Math.max(.08,Math.min(1,Math.sqrt(90000/activeSamples)));
         entry.material.uniforms.visibility.value=visibility*.92;
-        entry.mesh.visible=visibility>.025;
       }
+      return panoramaVisible;
     }
   }
 

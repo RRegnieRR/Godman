@@ -24,19 +24,23 @@
     }
 
     sample(dt) {
-      const frameMs = Math.min(50, dt * 1000);
-      this.frameEma += (frameMs - this.frameEma) * 0.035;
-      this.sampleTime += dt;
+      const frameMs = Math.min(100, dt * 1000);
+      const sampleSeconds = frameMs / 1000;
+      this.frameEma += (frameMs - this.frameEma) * (1 - Math.exp(-sampleSeconds * 3));
+      this.sampleTime += sampleSeconds;
 
-      if (this.frameEma < this.options.recoveryFrameMs) this.recoveryTime += dt;
-      else this.recoveryTime = Math.max(0, this.recoveryTime - dt * 2);
+      if (this.frameEma < this.options.recoveryFrameMs) this.recoveryTime += sampleSeconds;
+      else this.recoveryTime = Math.max(0, this.recoveryTime - sampleSeconds * 2);
 
-      if (this.sampleTime < 1.4) return;
+      if (this.sampleTime < 0.75) return;
       this.sampleTime = 0;
 
       let next = this.pixelRatio;
       if (this.frameEma > this.options.lowerFrameMs) {
-        next = Math.max(this.options.minPixelRatio, this.pixelRatio - 0.15);
+        // Pixel work grows with the square of the resolution. Use the
+        // measured frame budget to choose one bounded step out of overload.
+        const scale=Math.max(.76,Math.sqrt(this.options.targetFrameMs/this.frameEma));
+        next = Math.max(this.options.minPixelRatio, this.pixelRatio * scale);
         this.recoveryTime = 0;
       } else if (this.recoveryTime > 7) {
         next = Math.min(Math.min(devicePixelRatio || 1, this.options.maxPixelRatio, this.userMax), this.pixelRatio + 0.1);

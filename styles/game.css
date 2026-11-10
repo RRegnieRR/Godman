@@ -119,3 +119,15 @@
   #finderFooter { display: flex; justify-content: space-between; gap: 16px; margin-top: 14px; color: var(--paper-dim); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 1px; }
   .finderTextBtn { color: inherit; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-transform: uppercase; }
   .finderTextBtn:hover { color: var(--paper); }
+  #milkyWayCredit {
+    position: fixed;
+    right: 20px;
+    bottom: 16px;
+    z-index: 11;
+    padding: 3px 6px;
+    color: #e6e9f1;
+    background: rgba(3, 5, 10, .7);
+    font-size: 11px;
+    text-decoration: none;
+  }
+  #milkyWayCredit:hover { text-decoration: underline; }
