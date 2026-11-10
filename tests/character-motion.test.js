@@ -556,7 +556,7 @@ for(const hz of [30,144]){
     assert.ok(arm.thrustShare>0,'A hand reached forward without applying braking thrust');
     const plume=new T.Vector3();
     GodmanRepulsorAim(r.frame,arm.nodes[2],new T.Vector3(0,-1,0),arm.exhaust,plume);
-    assert.ok(plume.dot(travel)>.65,'Visible palm exhaust misses the braking direction');
+    assert.ok(plume.dot(travel)>.65,`Visible palm exhaust misses the braking direction at ${((i-150)*dt).toFixed(2)} s (${arm.side})`);
    }
   }
  }

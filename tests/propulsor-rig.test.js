@@ -19,7 +19,7 @@ function run(hz){
   engine.integrate(p,v,dt);
   assert.ok(engine.coordinated,'Real flight did not activate its shared frame');
   assert.ok(engine.rig.bodyUp.angleTo(engine.direction)<.721,'Physics requests thrust through the suit');
-  assert.ok(engine.force.length()<=56.001,'Turning exceeds surface thrust authority');
+  assert.ok(engine.force.clone().sub(engine.brakeForce).length()<=56.001,'Turning exceeds surface thrust authority');
   const angle=engine.rig.attitude.angleTo(previous);if(i)worst=Math.max(worst,angle/dt);
   previous.copy(engine.rig.attitude);
   assert.ok(v.toArray().every(Number.isFinite),'Turn/reversal generated a non-finite velocity');

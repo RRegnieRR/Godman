@@ -5,7 +5,9 @@
   'use strict';
   const T=g.THREE,damp=(a,b,k,dt)=>T.MathUtils.lerp(a,b,1-Math.exp(-k*dt));
   class FlightDynamics{
-    constructor(){
+    constructor({jumpStages=16,cruiseScale=1,surfaceThrustScale=1}={}){
+      this.jumpStages=jumpStages;this.cruiseScale=cruiseScale;
+      this.surfaceThrustScale=surfaceThrustScale;
       this.spool=0;this.throttle=0;this.brake=0;this.powered=false;this.acceleration=0;this.fuelUsed=0;
       this.force=new T.Vector3();this.direction=new T.Vector3(0,1,0);
       this.previousVelocity=new T.Vector3();this.relative=new T.Vector3();
@@ -13,7 +15,7 @@
       this.rig=g.GodmanPropulsorRig?new g.GodmanPropulsorRig():null;this.coordinated=false;
       this.launchImpulse=new T.Vector3();this.launchAim=new T.Vector3();this.launchAge=99;this.launchDuration=0;this.launchFlash=0;this.launchCharge=0;this.launchCost=0;this.launchDelay=.16;this.launchQueued=false;this.preparedDt=-1;this.integrationScale=1;
       this.hovering=false;this.hoverLocked=false;this.hoverRadius=NaN;this.hoverBody=null;
-      this.hoverVelocity=new T.Vector3();this.hoverAim=new T.Vector3(0,1,0);
+      this.hoverVelocity=new T.Vector3();this.hoverAim=new T.Vector3(0,1,0);this.hoverUp=new T.Vector3();
       this.brakeForce=new T.Vector3();this.brakeDirection=new T.Vector3();this.brakeHeading=new T.Vector3();this.brakeReach=0;
       this.primaryForce=new T.Vector3();this.steeringForce=new T.Vector3();this.steeringThrottle=0;
     }
@@ -51,13 +53,14 @@
       }else{
         if(!this.hovering||this.hoverBody!==s.body){
           this.hoverBody=s.body;
-          this.brakeHeading.copy(s.heading||this.desired).projectOnPlane(s.up);
+          this.brakeHeading.copy(v).sub(s.frameVelocity).projectOnPlane(s.up);
           if(this.rig?.initialized){
             // Keep the suit's left/right axis when coming out of a dive,
             // even if the player is already looking in another direction.
             this.hoverAim.set(1,0,0).applyQuaternion(this.rig.attitude).projectOnPlane(s.up);
             if(this.hoverAim.lengthSq()>.04)this.brakeHeading.crossVectors(s.up,this.hoverAim);
           }
+          if(this.brakeHeading.lengthSq()<1e-6&&s.heading)this.brakeHeading.copy(s.heading).projectOnPlane(s.up);
           if(this.brakeHeading.lengthSq()<1e-6){
             this.brakeHeading.set(Math.abs(s.up.z)<.9?0:1,0,-1).projectOnPlane(s.up);
           }
@@ -66,6 +69,11 @@
           this.hoverRadius=s.position&&s.center?s.position.distanceTo(s.center):NaN;
         }
         this.hoverVelocity.copy(v).sub(s.frameVelocity);
+        this.hoverUp.copy(s.up);
+        if(s.position&&s.center){
+          this.hoverAim.copy(s.position).sub(s.center);
+          if(this.hoverAim.lengthSq()>1)this.hoverUp.copy(this.hoverAim).normalize();
+        }
         const upright=!this.rig||!this.rig.initialized||
           (this.rig.bodyUp.dot(s.up)>.995&&this.rig.angularVelocity.length()<.05);
         this.hoverLocked=this.hoverVelocity.length()<.025&&upright;
@@ -87,7 +95,7 @@
       // Integrate the spool curve, rather than using its end-of-frame value.
       // Thrust and fuel consumption then agree at different frame rates.
       const meanSpool=dt>0?target+(previousSpool-target)*(-Math.expm1(-rate*dt))/(rate*dt):previousSpool;
-      this.brake=damp(this.brake,s.braking?1:0,s.braking?5.5:7.5,dt);
+      this.brake=damp(this.brake,s.braking?1:0,s.braking?8:7.5,dt);
       this.force.set(0,0,0);this.fuelUsed=0;this.throttle=0;
       if(s.fuel>0&&meanSpool>.00001){
         this.relative.copy(v).sub(s.frameVelocity);
@@ -96,10 +104,11 @@
         // Aim is authoritative, including downwards. Surface authority is
         // sufficient to arrest a fall when aimed up; cruise retains its speed
         // growth without letting a large charged jump multiply surface thrust.
-        const local=T.MathUtils.clamp(Math.max(56,s.gravity.length()*2.6),56,80);
-        const cruise=Math.min(s.nearBlackhole?2.2e6:2.4e21,Math.max(64,speed*.72));
+        const local=T.MathUtils.clamp(s.gravity.length()*2.6,56,80)*this.surfaceThrustScale;
+        const cruise=Math.min((s.nearBlackhole?2.2e6:2.4e21)*this.cruiseScale,Math.max(64*this.cruiseScale,speed*.72));
         const requested=T.MathUtils.lerp(cruise,local,surface);
-        const limit=80*surface+Math.max(80,cruise)*(1-surface);
+        const localCap=80*this.surfaceThrustScale;
+        const limit=localCap*surface+Math.max(localCap,cruise)*(1-surface);
         if(previousSpool<.001)this.acceleration=requested;
         else this.acceleration=damp(this.acceleration,requested,4,dt);
         this.acceleration=Math.min(this.acceleration,limit);
@@ -143,11 +152,11 @@
       if(this.hovering){
         const height=s.position&&s.center?s.position.distanceTo(s.center):NaN;
         const error=Number.isFinite(height)&&Number.isFinite(this.hoverRadius)?this.hoverRadius-height:0;
-        const vertical=this.hoverVelocity.dot(s.up);
-        const gravitySupport=Math.max(0,-s.gravity.dot(s.up));
+        const vertical=this.hoverVelocity.dot(this.hoverUp);
+        const gravitySupport=Math.max(0,-s.gravity.dot(this.hoverUp));
         const correction=T.MathUtils.clamp(error*5-vertical*2,-gravitySupport,40);
-        holdVerticalSpeed=T.MathUtils.clamp(error*3,-8,8);
-        this.force.copy(s.gravity).negate().addScaledVector(s.up,correction);
+        holdVerticalSpeed=T.MathUtils.clamp(error*3,-24,24);
+        this.force.copy(s.gravity).negate().addScaledVector(this.hoverUp,correction);
         const authority=T.MathUtils.clamp(Math.max(56,s.gravity.length()*2.6),56,80);
         this.force.clampLength(0,authority);
         this.direction.copy(this.force.lengthSq()>.000001?this.hoverAim.copy(this.force).normalize():s.up);
@@ -162,6 +171,8 @@
         const cost=this.hoverLocked?0:this.rig.controlCost;
         this.primaryForce.clampLength(0,Math.max(0,budget-cost));
         this.steeringForce.copy(this.rig.controlNet).applyQuaternion(this.rig.attitude);
+        if(this.hovering)this.primaryForce.copy(this.force).sub(this.steeringForce);
+        if(this.surfaceThrustScale>1&&!this.hovering&&cost>budget)this.steeringForce.multiplyScalar(budget/cost);
         this.force.copy(this.primaryForce).add(this.steeringForce);
         if(this.force.lengthSq()>.000001)this.direction.copy(this.force).normalize();
         this.steeringThrottle=T.MathUtils.clamp(cost/rated,0,1);
@@ -170,20 +181,20 @@
         this.fuelUsed=this.hovering?0:Math.min(s.fuel,burn*(this.primaryForce.length()+cost)/rated*dt);
       }
       if(this.hovering&&!this.hoverLocked){
-        this.brakeDirection.copy(this.hoverVelocity).projectOnPlane(s.up);
+        this.brakeDirection.copy(this.hoverVelocity).projectOnPlane(this.hoverUp);
         const speed=this.brakeDirection.length();
         const moving=T.MathUtils.smoothstep(speed,.25,2.5);
         this.brakeReach=T.MathUtils.smoothstep(this.brake,.02,.62)*moving;
         if(dt>0&&speed>1e-6){
           this.brakeDirection.divideScalar(speed);
-          const rated=T.MathUtils.clamp(Math.max(56,s.gravity.length()*2.6),56,80);
-          const remaining=Math.max(0,rated-this.primaryForce.length()-(this.coordinated?this.rig.controlCost:0));
           // Give the arms a brief lead before the counter-thrust builds.
-          const ignition=T.MathUtils.smoothstep(this.brake,.82,.98);
-          const deceleration=ignition*Math.min(38,remaining,speed*(-Math.expm1(-this.brake*3*dt))/dt);
+          const ignition=T.MathUtils.smoothstep(this.brake,.915,.985);
+          const cruise=1-T.MathUtils.clamp(s.surface,0,1);
+          const cap=64+Math.min(560,speed*1.18)+cruise*speed*1.8;
+          const deceleration=ignition*Math.min(cap,speed*(-Math.expm1(-4.2*dt))/dt);
           this.brakeForce.copy(this.brakeDirection).multiplyScalar(-deceleration);
           this.force.add(this.brakeForce);
-          this.throttle=Math.max(this.throttle,deceleration/56);
+          this.throttle=Math.max(this.throttle,Math.min(1,deceleration/64));
         }
       }
       const gravityTime=launching?Math.min(dt,Math.max(0,this.launchAge-this.launchDelay)):dt;
@@ -192,13 +203,13 @@
       if(this.brake>.001||this.hovering){
         const damping=this.brake*3;
         this.relative.copy(v).sub(s.frameVelocity);
-        const radialSpeed=this.relative.dot(s.up);
         if(!this.hovering)this.relative.multiplyScalar(Math.exp(-damping*dt));
         if(this.hovering){
           // Keep the original horizontal braking. Radially, slow toward a
           // bounded correction speed so a fast climb can return to its hold point.
+          const radialSpeed=this.relative.dot(this.hoverUp);
           const verticalSpeed=damp(radialSpeed,holdVerticalSpeed,16,dt);
-          this.relative.addScaledVector(s.up,verticalSpeed-this.relative.dot(s.up));
+          this.relative.addScaledVector(this.hoverUp,verticalSpeed-radialSpeed);
         }
         v.copy(s.frameVelocity).add(this.relative);
       }
@@ -210,7 +221,7 @@
       dt*=this.integrationScale;
       position.addScaledVector(this.previousVelocity,dt*.5).addScaledVector(velocity,dt*.5);
     }
-    jumpStage(charge){return Math.max(1,Math.min(16,Math.floor(T.MathUtils.clamp(charge,0,1)*16+1e-9)));}
+    jumpStage(charge){return Math.max(1,Math.min(this.jumpStages,Math.floor(T.MathUtils.clamp(charge,0,1)*this.jumpStages+1e-9)));}
     jumpDirection(aim,up,out){
       out.copy(aim).normalize();
       // Keep the viewed heading while clearing the surface when the
@@ -231,7 +242,7 @@
       const elevation=out.dot(up);
       // Small jumps need leg-driven lift even when looking along the ground.
       // Additional charge can extend the aimed leap without lowering its arc.
-      const lift=this.jumpVelocity(Math.min(stage,3)/16,gravity,radius);
+      const lift=this.jumpVelocity(Math.min(stage,3)/this.jumpStages,gravity,radius);
       const forward=T.MathUtils.lerp(.45,1,T.MathUtils.smoothstep(stage,1,6));
       out.addScaledVector(up,-elevation).multiplyScalar(speed*forward);
       return out.addScaledVector(up,Math.max(speed*elevation,lift));

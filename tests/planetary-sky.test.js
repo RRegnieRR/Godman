@@ -81,8 +81,23 @@ update(earth);assert.equal(sky.geometry,earthGeometry,'Returning to Earth alloca
 const reused={name:'Moon',r:173700,center:new T.Vector3(0,-173700,0)};update(reused);reused.name='Earth';reused.r=637100;reused.center.y=-637100;assert.ok(update(reused).enabled&&sky.layers.length===2,'Reused streamed body retained its old sky');
 observer.set(0,30000,0);state=update(earth);assert.ok(!state.enabled&&state.starVisibility>.99,'Atmosphere did not give way to space');
 assert.ok(sky.layers.every(l=>l.userData.volume&&l.material.side===T.BackSide),'Orbital Earth switched back to thin shells');
+const fullScaleSky=new GodmanPlanetarySky(T,new T.Scene(),true,1);
+const fullScaleEarth={...earth,r:earth.r*10,center:earth.center.clone().multiplyScalar(10)};
+const fullScaleStar={...star,center:star.center.clone().multiplyScalar(10)};
+observer.set(0,30000,0);
+assert.ok(fullScaleSky.update(camera,fullScaleEarth,observer,fullScaleStar,0).enabled,'Full-scale Earth lost its atmosphere at 30 km');
+assert.equal(fullScaleSky.material.uniforms.topRadius.value,sky.material.uniforms.topRadius.value);
+observer.set(0,160000,0);
+assert.ok(!fullScaleSky.update(camera,fullScaleEarth,observer,fullScaleStar,0).enabled,'Full-scale atmosphere extended past its fade');
+fullScaleSky.dispose();
 observer.set(0,0,0);state=sky.update(camera,earth,observer,star,0,0);assert.equal(state.skyFactor,0,'Eclipse failed to darken the sky');
 const fog=new GodmanSurfaceAtmosphere(T,scene,{surfaceFogDensity:.00016,mountainFogDensity:.00029,fadeAltitudeRatio:.018});
+const hazeState={enabled:true,altitude:0,bodyRadius:6371000,fadeHeight:4800,skyFactor:1,daylight:1,atmosphereColor:0x72aaff};
+fog.update(hazeState);
+const originalBlue=fog.fog.color.b-fog.fog.color.r,originalDensity=fog.fog.density;
+fog.update({...hazeState,earth:true});
+assert.ok(fog.fog.color.b-fog.fog.color.r<originalBlue*.5,'Earth surface haze stayed saturated blue');
+assert.ok(fog.fog.density<originalDensity,'Earth haze still obscures the distant ground');
 fog.update({enabled:true,altitude:480,bodyRadius:637100,fadeHeight:480,skyFactor:1,daylight:1,atmosphereColor:0x6db3ff});assert.equal(fog.fog.density,0,'Surface haze remained opaque above its layer');
 // C moves only the camera. Earth remains directly below the astronaut.
 star.center.set(0,1.496e10,0);

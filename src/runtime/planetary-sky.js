@@ -214,8 +214,8 @@
     }`;
 
   class PlanetarySky{
-    constructor(T,scene,fragmentDepth=true){
-      this.T=T;this.scene=scene;this.fragmentDepth=fragmentDepth;this.body=null;this.profile=null;this.layers=[];
+    constructor(T,scene,fragmentDepth=true,metersPerUnit=10){
+      this.T=T;this.scene=scene;this.fragmentDepth=fragmentDepth;this.metersPerUnit=metersPerUnit;this.body=null;this.profile=null;this.layers=[];
       this.inverse=new T.Quaternion();this.rotation=new T.Matrix4();this.relative=new T.Vector3();this.up=new T.Vector3();this.sun=new T.Vector3();this.sunColor=new T.Color();
       this.state={enabled:false,daylight:0,skyFactor:0,starVisibility:1,altitude:0,sunHeight:-1};
       const uniforms={inverseProjection:{value:new T.Matrix4()},cameraBasis:{value:new T.Matrix3()},observer:{value:new T.Vector3(0,1.00001,0)},sunDirection:{value:new T.Vector3(0,1,0)},
@@ -238,7 +238,7 @@
       // enough curvature to stay above the surface, with finer shells only
       // where a large planet's low cloud deck actually needs them.
       if(p.clouds.length){
-        const height=Math.min(...p.clouds.map(deck=>deck.height))/10;
+        const height=Math.min(...p.clouds.map(deck=>deck.height))/this.metersPerUnit;
         let segments=64;
         while(segments<1024&&(body.r+height)*(1-Math.cos(Math.PI/segments))>=height*.9)segments*=2;
         if(!this.geometries.has(segments))this.geometries.set(segments,new T.SphereGeometry(1,segments*2,segments));
@@ -250,13 +250,13 @@
           sunDirection:{value:new T.Vector3()},sunLocal:{value:new T.Vector3()},
           sunColor:{value:new T.Color()},tint:{value:new T.Color(p.haze>.3?p.tint:0xffffff)},
           wind:{value:new T.Vector3()},coverage:{value:deck.coverage},opacity:{value:deck.opacity},
-          frequency:{value:deck.scale},horizonDip:{value:Math.sqrt(2*deck.height/(body.r*10))},
+          frequency:{value:deck.scale},horizonDip:{value:Math.sqrt(2*deck.height/(body.r*this.metersPerUnit))},
           irradiance:{value:1},eclipse:{value:1}
         };
-        const radius=body.r+deck.height/10;
+        const radius=body.r+deck.height/this.metersPerUnit;
         let proxyRadius=radius;
         if(volume){
-          const half=deck.thickness/20;
+          const half=deck.thickness/(2*this.metersPerUnit);
           Object.assign(uniforms,{
             cloudBase:{value:(radius-half)/body.r},cloudTop:{value:(radius+half)/body.r},
             cloudObserver:{value:new T.Vector3()},cloudBasis:{value:new T.Matrix3()},
@@ -280,14 +280,14 @@
       }
     }
 
-    update(camera,body,observer,star,time,eclipse=1,au=1.496e10){
+    update(camera,body,observer,star,time,eclipse=1,au=1.496e11/this.metersPerUnit){
       this.setBody(body);
       const p=this.profile,s=this.state,T=this.T;
       this.relative.copy(observer).add(camera.position).sub(body.center);
       s.altitude=this.relative.length()-body.r;this.up.copy(this.relative).normalize();
       this.sun.copy(star.center).sub(observer).sub(camera.position).normalize();
       s.sunHeight=this.up.dot(this.sun);s.daylight=daylight(s.sunHeight)*eclipse;
-      const depth=p?p.top/10:1;
+      const depth=p?p.top/this.metersPerUnit:1;
       s.enabled=!!p&&s.altitude<depth*1.5;
       const immersion=p?1-smooth(depth*.12,depth*1.25,Math.max(0,s.altitude)):0;
       s.immersion=immersion;
@@ -302,7 +302,7 @@
         l.visible=!!p&&s.altitude<body.r*10;
         const {deck,volume}=l.userData;
         if(!volume){
-          const side=s.altitude*10<deck.height?T.BackSide:T.FrontSide;
+          const side=s.altitude*this.metersPerUnit<deck.height?T.BackSide:T.FrontSide;
           if(l.material.side!==side){l.material.side=side;l.material.needsUpdate=true;}
         }
         l.position.copy(body.center).sub(observer);
@@ -318,13 +318,13 @@
           u.cloudProjection.value.copy(camera.projectionMatrix);
         }else if(deck.thickness){
           // Devices without programmable depth still get a soft crossing.
-          const distance=Math.abs(s.altitude*10-deck.height);
+          const distance=Math.abs(s.altitude*this.metersPerUnit-deck.height);
           u.opacity.value=deck.opacity*smooth(0,deck.thickness*.5,distance);
         }
         u.wind.value.set(time*.00012,0,time*.00005);
       }
       if(!s.enabled)return s;
-      const u=this.material.uniforms,physicalRadius=body.r*10;
+      const u=this.material.uniforms,physicalRadius=body.r*this.metersPerUnit;
       camera.updateMatrixWorld();u.inverseProjection.value.copy(camera.projectionMatrixInverse);u.cameraBasis.value.setFromMatrix4(camera.matrixWorld);
       u.observer.value.copy(this.relative).divideScalar(body.r);u.sunDirection.value.copy(this.sun);u.sunColor.value.copy(this.sunColor);
       u.topRadius.value=1+p.top/physicalRadius;u.rayHeight.value=p.scale/physicalRadius;u.mieHeight.value=p.aerosolScale/physicalRadius;

@@ -72,6 +72,29 @@ function endurance(hz,surface){
  assert.equal(engine.force.lengthSq(),0,'Empty tank still supplied energy');
  return seconds;
 }
+for(const hz of [30,60,144]){
+ const dt=1/hz,flight=new GodmanFlightDynamics({surfaceThrustScale:1.55,cruiseScale:10});
+ const velocity=new T.Vector3(),position=new T.Vector3();
+ const state={velocity,gravity,up,aim:up,move:zero,frameVelocity:zero,surface:1,fuel:100,thrust:true,braking:false};
+ let previous=0;
+ for(let i=0;i<hz*2;i++){
+  flight.update(dt,state);
+  const force=flight.force.length();
+  assert.ok(force>=previous-1e-8&&force<=56*1.55+1e-8,'Full-scale surface thrust overshot its target');
+  assert.ok((force-previous)/dt<400,'Full-scale thrust ramp spiked');
+  flight.integrate(position,velocity,dt);
+  previous=force;
+ }
+ assert.ok(previous>86&&position.y>110,'Full-scale thrust failed to lift faster');
+ flight.rig.initialize(new T.Quaternion(),up);
+ state.heading=new T.Vector3(0,0,-1);
+ state.surface=0;
+ velocity.set(0,4000,0);
+ for(let i=0;i<hz;i++)flight.update(dt,state);
+ state.surface=1;
+ flight.update(dt,state);
+ assert.ok(flight.force.length()<=124+1e-8,'Cruise thrust leaked through the full-scale surface cap');
+}
 const surfaceBurns=[30,60,144].map(hz=>endurance(hz,1)),spaceBurns=[30,60,144].map(hz=>endurance(hz,0));
 for(const seconds of surfaceBurns)assert.ok(seconds>10&&seconds<10.5,'Surface fuel does not last about twice as long');
 for(const seconds of spaceBurns)assert.ok(seconds>50&&seconds<50.5,'Deep-space fuel does not last about twice as long');
@@ -144,6 +167,21 @@ for(let i=0;i<60*120;i++){
  launch.integrate(position,launchVelocity,1/120);
 }
 assert.ok(position.y-planetRadius>15000,'Integrated full-charge jump did not clear the sky/atmosphere layer');
+const fullScaleLaunch=new GodmanFlightDynamics({jumpStages:19,cruiseScale:10}),fullRadius=6371000;
+assert.equal(fullScaleLaunch.jumpStage(1),19);
+assert.equal(fullScaleLaunch.jumpHeight(0),launch.jumpHeight(0),'Full scale changed the first hop');
+const fullPosition=new T.Vector3(0,fullRadius,0);
+const fullVelocity=new T.Vector3(),step=1/120;
+let fullFuel=100;
+assert.ok(fullScaleLaunch.beginLaunch(1,up,up,9.81,fullRadius,fullFuel));
+while(!fullScaleLaunch.prepareLaunch(step)){}
+for(let i=0;i<60*120;i++){
+ const gravity=new T.Vector3(0,-9.81*(fullRadius/fullPosition.y)**2,0);
+ fullScaleLaunch.update(step,{velocity:fullVelocity,gravity,up,aim:up,move:zero,frameVelocity:zero,surface:1,fuel:fullFuel,thrust:false,braking:false});
+ fullFuel-=fullScaleLaunch.fuelUsed;
+ fullScaleLaunch.integrate(fullPosition,fullVelocity,step);
+}
+assert.ok(fullPosition.y-fullRadius>100000,'Full-scale launch failed to clear Earth’s atmosphere');
 const coarse=simulation(30,{thrust:true,look:up}),fine=simulation(144,{thrust:true,look:up});
 assert.ok(coarse.p.distanceTo(fine.p)<1,'Lift response diverged across frame rates');
 console.log('PASS: ballistic gravity/apex, frame-rate convergence, camera-directed thrust, fall recovery, staged atmosphere-clearing jumps, fuel exhaustion, braking and deep-space cruise.');

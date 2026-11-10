@@ -55,6 +55,29 @@ for(const hz of [30,60,144])for(const [axis,g] of [[Y,9.81],[new T.Vector3(1,0,0
  }
  assert.ok(engine.rig.bodyUp.dot(Y)>.995,'Shift did not recover upright from a steep dive');
 }
+// A fast banked approach should shed speed early without rotating past
+// the captured hover orientation or adding sideways drift.
+for(const hz of [30,60,144]){
+ const engine=new GodmanFlightDynamics(),dt=1/hz;
+ const seed=new T.Quaternion().setFromEuler(new T.Euler(-1.25,.35,.65));
+ engine.rig.initialize(seed,Y);
+ engine.rig.angularVelocity.set(.25,.85,-1.65);
+ const velocity=heading.clone().multiplyScalar(620),gravity=new T.Vector3(0,-9.81,0);
+ let previousSpeed=velocity.length(),previousAngle=Infinity;
+ for(let i=0;i<hz*4;i++){
+  engine.update(dt,{velocity,gravity,up:Y,heading,aim:heading.clone().negate(),
+   frameVelocity:zero,surface:1,fuel:10,thrust:false,braking:true});
+  const speed=velocity.clone().projectOnPlane(Y).length();
+  const angle=engine.rig.attitude.angleTo(engine.rig.target);
+  assert.ok(speed<=previousSpeed+1e-8,'High-speed brake added speed');
+  assert.ok(angle<=previousAngle+1e-8,'The braking suit swung away from its hold attitude');
+  assert.ok(Math.abs(velocity.x)<1e-7&&velocity.z<=1e-8,'High-speed brake pushed sideways or reversed travel');
+  if(i===Math.round(hz*.6))assert.ok(speed<490,'Counter-thrust took too long to engage');
+  if(i===hz*2)assert.ok(speed<70,'High-speed braking was too slow');
+  previousSpeed=speed;previousAngle=angle;
+ }
+ assert.ok(engine.rig.bodyUp.dot(Y)>.999&&previousSpeed<.06,'Fast braking did not settle');
+}
 // A yaw turn uses actual opposing fore/aft hand forces. The opposite pair
 // brakes the angular velocity as the target is reached.
 for(const direction of [-1,1]){

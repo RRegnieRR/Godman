@@ -10,9 +10,10 @@ or teleports with the player.
    finished building.
 2. Missing replacement tiles remain hidden behind the orbital fallback instead
    of creating holes in the current ring.
-3. The globe cutaway and tile cutaway share a local Earth-space centre. The
-   tile shader receives that centre transformed by Earth's current rotation on
-   every frame.
+3. Walking tiles clip to a fixed Earth-space centre. The regional mesh and
+   globe fill pixels left uncovered by finer terrain using the stencil
+   buffer. Planet rotation and render-origin shifts leave the centre and
+   texture coordinates unchanged.
 4. Chunk borders have downward skirts to cover interpolation gaps between
    neighbouring LOD levels.
 5. Streaming runs after movement and collision so jumps and landings request

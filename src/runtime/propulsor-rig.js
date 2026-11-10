@@ -153,12 +153,26 @@
         if(this.error.w<0)this.error.set(-this.error.x,-this.error.y,-this.error.z,-this.error.w);
         const sin=Math.hypot(this.error.x,this.error.y,this.error.z),angle=2*Math.atan2(sin,this.error.w);
         this.axis.set(this.error.x,this.error.y,this.error.z).multiplyScalar(angle/Math.max(sin,1e-8));
-        const stiffness=s.braking?10:20;
-        const damping=s.braking?9.5:9;
-        this.axis.multiplyScalar(stiffness).addScaledVector(this.angularVelocity,-damping).clampLength(0,s.braking?3:5);
+        if(s.braking&&!s.hover){
+          // Recover along the shortest arc. Carry only the component of the
+          // incoming turn that helps that arc, and never cross the target.
+          this.axis.normalize();
+          const speed=Math.max(0,this.angularVelocity.dot(this.axis));
+          const requested=Math.min(2.2,angle*4);
+          const turn=Math.min(angle,T.MathUtils.lerp(speed,requested,1-Math.exp(-12*h))*h);
+          this.rotatingMomentum.copy(this.axis).multiplyScalar(turn/h);
+          this.axis.copy(this.rotatingMomentum).sub(this.angularVelocity).multiplyScalar(1/h).clampLength(0,5);
+          this.allocate(this.axis,s.authority??56,h);
+          this.angularVelocity.copy(this.rotatingMomentum);
+          this.axis.copy(this.angularVelocity).normalize();
+          if(turn>1e-8)this.attitude.multiply(this.step.setFromAxisAngle(this.axis,turn)).normalize();
+          continue;
+        }
+        this.axis.multiplyScalar(20).addScaledVector(this.angularVelocity,-9).clampLength(0,5);
         if(s.hover){
           // Once settled, small boot-gimbal corrections hold the frame;
           // the captured heading does not follow mouse-look.
+          this.axis.set(0,0,0);this.angularVelocity.set(0,0,0);
           this.controlTorque.set(0,0,0);this.controlNet.set(0,0,0);this.controlCost=this.steer=this.effort=0;
           for(const p of this.ports)p.control.set(0,0,0);
         }else{
@@ -189,22 +203,28 @@
   }
   g.GodmanPropulsorRig=PropulsorRig;
   g.GodmanPropulsorFlash=function(){
-    const material=new T.ShaderMaterial({transparent:true,depthWrite:false,blending:T.AdditiveBlending,side:T.DoubleSide,
-      uniforms:{strength:{value:0}},vertexShader:`varying vec2 uvFlash;
+    const material=new T.ShaderMaterial({transparent:true,depthWrite:false,blending:T.CustomBlending,
+      blendSrc:T.OneFactor,blendDst:T.OneMinusSrcAlphaFactor,side:T.DoubleSide,
+      uniforms:{strength:{value:0},heat:{value:0}},vertexShader:`varying vec2 uvFlash;
         #include <common>
         #include <logdepthbuf_pars_vertex>
         void main(){uvFlash=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);
         #include <logdepthbuf_vertex>
-        }`,fragmentShader:`varying vec2 uvFlash;uniform float strength;
+        }`,fragmentShader:`varying vec2 uvFlash;uniform float strength,heat;
         #include <common>
         #include <logdepthbuf_pars_fragment>
         void main(){
         #include <logdepthbuf_fragment>
         float r=length(uvFlash-.5)*2.;float halo=exp(-r*r*6.)*(1.-smoothstep(.65,1.,r));
         vec3 col=mix(vec3(.12,.45,1.6),vec3(4.,4.5,5.),exp(-r*r*38.));
+        vec3 hot=mix(vec3(1.5,.36,.04),vec3(3.,1.55,.37),exp(-r*r*38.));
+        vec3 depleted=mix(vec3(1.25,.02,.01),vec3(2.55,.17,.03),exp(-r*r*38.));
+        col=mix(mix(col,hot,smoothstep(0.,.62,heat)),depleted,smoothstep(.42,1.,heat));
         gl_FragColor=vec4(col,halo*strength);
         #include <tonemapping_fragment>
         #include <encodings_fragment>
+        gl_FragColor.rgb*=gl_FragColor.a;
+        gl_FragColor.a*=smoothstep(.22,1.,heat);
         }`});
     const group=new T.Group(),geometry=new T.PlaneGeometry(.7,.7);
     for(let i=0;i<3;i++){const plane=new T.Mesh(geometry,material);if(i===1)plane.rotation.y=Math.PI/2;if(i===2)plane.rotation.x=Math.PI/2;group.add(plane);}

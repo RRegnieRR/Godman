@@ -323,6 +323,9 @@
             c.thrustShare=port.power;
             c.exhaust.copy(port.exhaust).applyQuaternion(this.flightRig.attitude).applyQuaternion(this.exhaustFrameInverse);
           }
+          // Aim the palms during the brace, before the counter-jets light.
+          // The small attitude-correction jets can point elsewhere.
+          if(c.type==='arm'&&braking>0&&this.brakeLocal.lengthSq()>.01)c.exhaust.copy(this.brakeLocal);
           if(s.hoverHold&&c.type==='arm'){c.thrustShare=0;c.wristParticipation=0;}
         }
         c.launchTracking=launch.burst?launch.weight:0;

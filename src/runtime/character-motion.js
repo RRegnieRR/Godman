@@ -645,8 +645,8 @@
   function createRepulsorPlume(type) {
     const foot = type === 'foot';
     const material = new T.ShaderMaterial({transparent: true, depthWrite: false,
-      blending: T.AdditiveBlending, side: T.DoubleSide,
-      uniforms: {strength: {value: 0}, time: {value: 0}},
+      blending: T.CustomBlending, blendSrc: T.OneFactor, blendDst: T.OneMinusSrcAlphaFactor, side: T.DoubleSide,
+      uniforms: {strength: {value: 0}, time: {value: 0}, heat: {value: 0}},
       vertexShader: `varying vec2 vUv; varying float facing; uniform float strength;
         #include <common>
         #include <logdepthbuf_pars_vertex>
@@ -655,7 +655,7 @@
         gl_Position=projectionMatrix*view;
         #include <logdepthbuf_vertex>
         }`,
-      fragmentShader: `varying vec2 vUv; varying float facing; uniform float strength,time;
+      fragmentShader: `varying vec2 vUv; varying float facing; uniform float strength,time,heat;
         #include <common>
         #include <logdepthbuf_pars_fragment>
         void main(){
@@ -667,9 +667,16 @@
           float flow=.94+.06*sin(t*45.-time*26.);
           vec3 col=mix(vec3(.10,.42,1.4),vec3(3.,3.8,4.),exp(-t*9.));
           col+=diamonds*vec3(.4,.8,1.3);
+          vec3 hot=mix(vec3(1.45,.42,.04),vec3(2.6,1.45,.39),exp(-t*9.));
+          vec3 depleted=mix(vec3(1.2,.018,.008),vec3(2.4,.16,.036),exp(-t*9.));
+          col=mix(mix(col,hot,smoothstep(0.,.62,heat)),depleted,smoothstep(.42,1.,heat));
           gl_FragColor=vec4(col,edge*fade*strength*flow*.65);
           #include <tonemapping_fragment>
           #include <encodings_fragment>
+          // Keep full-power jets additive. Warm exhaust also occludes a
+          // little of the background, so it reads as red against snow.
+          gl_FragColor.rgb*=gl_FragColor.a;
+          gl_FragColor.a*=smoothstep(.22,1.,heat);
         }`});
     // Concentric closed jets give a continuous silhouette from every angle.
     const group = new T.Group();
