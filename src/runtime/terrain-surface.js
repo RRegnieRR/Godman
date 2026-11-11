@@ -275,7 +275,7 @@
       for(const name of names)geo.attributes[name].needsUpdate=true;
       if(tile.waterMesh){
         const depth=tile.waterMesh.geometry.attributes.earthWaterDepth,ground=geo.attributes.earthGround;
-        for(let i=0;i<depth.count;i++)depth.setX(i,tile.seaLevel-ground.getW(i));
+        for(let i=0;i<depth.count;i++)depth.setX(i,tile.waterLevels[i]-ground.getW(i));
         depth.needsUpdate=true;
       }
       geo.computeBoundingSphere();this.refreshSkirt(tile);

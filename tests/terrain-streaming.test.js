@@ -10,7 +10,7 @@ function fixture(code,worldFactor=1){
   const earth={r:637100*worldFactor,center:new T.Vector3(),mesh:new T.Group()};
   let builds=0;
   const context={window:global,stitchEarthSurfaceTiles(){},THREE:T,worldFactor,earth,earthSurfaceTiles:tiles,earthElevation:{ready:true},pos:new T.Vector3(-earth.r,0,0).applyAxisAngle(new T.Vector3(0,1,0),.0004),earthTileQ:new T.Quaternion(),earthTileN:new T.Vector3(),earthSurfaceCutaway:{center:{value:new T.Vector3()},chordSq:{value:-1},detail:{value:1}},performance:{now:()=>0},
-    earthDetailRoot:earth.mesh,fullScaleTerrain,sampleEarthElevationRaster:()=>fullScaleTerrain?8849:0,
+    earthDetailRoot:earth.mesh,fullScaleTerrain,earthHydrographyLoading:false,earthWaterLevelLocal:()=>null,sampleEarthElevationRaster:()=>fullScaleTerrain?8849:0,
     *createEarthSurfaceTile(...args){yield;return context.buildEarthSurfaceTile(...args);},
     buildEarthSurfaceTile(ix,iy,lonCells,latCells,lod){
       const key=ix+':'+iy+':'+lod,tile={key,group:new T.Group(),lastUsed:0};builds++;tiles.tiles.set(key,tile);earth.mesh.add(tile.group);return tile;

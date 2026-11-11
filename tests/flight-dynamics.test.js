@@ -72,20 +72,20 @@ function endurance(hz,surface){
  assert.equal(engine.force.lengthSq(),0,'Empty tank still supplied energy');
  return seconds;
 }
-for(const hz of [30,60,144]){
- const dt=1/hz,flight=new GodmanFlightDynamics({surfaceThrustScale:1.55,cruiseScale:10});
+for(const scale of [1.25,1.95])for(const hz of [30,60,144]){
+ const dt=1/hz,flight=new GodmanFlightDynamics({surfaceThrustScale:scale,cruiseScale:scale>1.5?10:1});
  const velocity=new T.Vector3(),position=new T.Vector3();
  const state={velocity,gravity,up,aim:up,move:zero,frameVelocity:zero,surface:1,fuel:100,thrust:true,braking:false};
  let previous=0;
  for(let i=0;i<hz*2;i++){
   flight.update(dt,state);
   const force=flight.force.length();
-  assert.ok(force>=previous-1e-8&&force<=56*1.55+1e-8,'Full-scale surface thrust overshot its target');
+  assert.ok(force>=previous-1e-8&&force<=56*scale+1e-8,'Full-scale surface thrust overshot its target');
   assert.ok((force-previous)/dt<400,'Full-scale thrust ramp spiked');
   flight.integrate(position,velocity,dt);
   previous=force;
  }
- assert.ok(previous>86&&position.y>110,'Full-scale thrust failed to lift faster');
+ assert.ok(previous>55*scale&&position.y>70*scale,'Full-scale thrust failed to lift faster');
  flight.rig.initialize(new T.Quaternion(),up);
  state.heading=new T.Vector3(0,0,-1);
  state.surface=0;
@@ -93,7 +93,7 @@ for(const hz of [30,60,144]){
  for(let i=0;i<hz;i++)flight.update(dt,state);
  state.surface=1;
  flight.update(dt,state);
- assert.ok(flight.force.length()<=124+1e-8,'Cruise thrust leaked through the full-scale surface cap');
+ assert.ok(flight.force.length()<=80*scale+1e-8,'Cruise thrust leaked through the full-scale surface cap');
 }
 const surfaceBurns=[30,60,144].map(hz=>endurance(hz,1)),spaceBurns=[30,60,144].map(hz=>endurance(hz,0));
 for(const seconds of surfaceBurns)assert.ok(seconds>10&&seconds<10.5,'Surface fuel does not last about twice as long');

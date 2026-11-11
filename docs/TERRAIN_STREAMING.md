@@ -24,3 +24,20 @@ or teleports with the player.
 This follows the useful invariants of geometry clipmaps—complete active levels,
 nested detail, and continuity at resolution transitions—without replacing the
 project's existing spherical elevation and collision model.
+
+## Inland water
+
+Earth uses the public-domain [Natural Earth 1:10m physical vectors](https://www.naturalearthdata.com/downloads/10m-physical-vectors/)
+for lake outlines and river centerlines. The elevation raster supplies estimated
+water levels, and the river widths and beds are modeled. The same Earth-local
+samples drive terrain, water rendering, and landing contact in both scales.
+
+Regenerate the bundled asset with the Natural Earth `ne_10m_lakes.zip` and
+`ne_10m_rivers_lake_centerlines.zip` downloads and Python with Pillow, NumPy,
+and SciPy installed.
+
+```sh
+python3 tools/import-earth-hydrography.py ne_10m_lakes.zip \
+  ne_10m_rivers_lake_centerlines.zip assets/earth/earth_elevation_nasa_4096.png \
+  assets/earth/earth_specular_2048.jpg assets/earth/hydrography.bin
+```

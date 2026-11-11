@@ -5,7 +5,8 @@ const source=fs.readFileSync(require.resolve('../src/game.js'),'utf8');
 const earth={r:637100,mesh:new T.Group()},crater={strength:0,center:new T.Vector3(-1,0,0)};
 const context={shoulderFlashlight:{light:{castShadow:false}},THREE:T,window:global,earth,earthDetailRoot:earth.mesh,EARTH_SEA_LEVEL:.42,earthSurfaceTiles:{tiles:new Map(),lodSegments:[128,64,32,16],frame:0},
  fullScaleTerrain:false,worldFactor:1,V3:(x,y,z)=>new T.Vector3(x,y,z),sampleEarthElevationRaster:()=>100,
- earthCoastDistance:()=>Infinity,earthReefAt:()=>0,
+ earthCoastDistance:()=>Infinity,earthReefAt:()=>0,worldMeters:meters=>meters/10,
+ sampleEarthInlandWater:()=>({kind:0}),earthWaterLevelLocal:(n,coast,inland)=>inland.kind?(inland.bank<=0?inland.level/10:null):(coast<0?.42:null),
  earthFineReliefLocal:n=>6*Math.sin(n.x*earth.r/24)+9*Math.cos(n.z*earth.r/37),
  earthCraterDispLocal:n=>-crater.strength*Math.exp(-((n.distanceTo(crater.center)*earth.r/60)**2)),
  sampleEarthMeltLocal:()=>({strength:crater.strength? .5:0,birth:0}),earthAlbedoLocal:(n,c)=>{c.setRGB(.15,.25,.1);return true;},
@@ -164,6 +165,23 @@ for(let i=0;i<waterGeo.index.count;i+=3){
  if(depths.some(depth=>depth<=0))crossingTriangle=true;
 }
 assert.ok(crossingTriangle,'The water geometry stopped before reaching the shore contour');
+// An elevated lake must share the visible water height and the bed through stitching.
+context.earthCoastDistance=()=>Infinity;
+context.worldMeters=meters=>meters;
+context.earthWaterLevelLocal=(n,coast,inland)=>inland.bank<=0?inland.level:null;
+context.sampleEarthInlandWater=n=>({kind:1,level:180,bank:(Math.atan2(n.z,-n.x)-shoreAngle)*earth.r});
+context.earthFineReliefLocal=(n,base,coast,reef,inland=context.sampleEarthInlandWater(n))=>
+  inland.level+inland.bank*.05-base;
+const lakeTile=context.buildEarthSurfaceTile(shoreColumn,shoreRow,wideCols,wideRows,4);
+assert.ok(lakeTile.waterMesh,'The elevated lake has no water surface');
+landingSurface.stitch(lakeTile,[1,1,1,1],true);
+const lakeGeometry=lakeTile.waterMesh.geometry;
+const lakeVertex=lakeGeometry.index.getX(0);
+const waterVertex=new T.Vector3().fromBufferAttribute(lakeGeometry.attributes.position,lakeVertex)
+  .applyQuaternion(lakeTile.group.quaternion).add(lakeTile.group.position);
+assert.ok(Math.abs(waterVertex.length()-earth.r-180)<.001,'Lake rendered at sea level');
+assert.ok(lakeGeometry.attributes.earthWaterDepth.getX(lakeVertex)>0,'Stitching erased the lake depth');
+assert.equal(lakeGeometry.attributes.earthWaterInland.getX(lakeVertex),1);
 // Every original triangle must appear exactly once, including both poles and
 // the longitude seam. Sector bounds must contain all the indexed vertices.
 const globe=new T.SphereGeometry(100,40,20);

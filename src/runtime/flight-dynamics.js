@@ -90,7 +90,12 @@
         this.rig.update(dt,{up:s.up,heading:this.hovering?this.brakeHeading:wants||launching||!this.rig.initialized?s.heading:this.rig.heading,aim:this.desired.lengthSq()>.5?this.desired:s.up,active,braking:this.hovering,drive:!this.hovering&&!launching,surface:s.surface,hover:this.hoverLocked,authority:(this.hovering?Math.max(s.gravity.length(),8):Math.max(correcting?8:0,this.acceleration*this.spool))*pressure});
         this.coordinated=true;this.direction.copy(this.rig.direction);
       }
-      const previousSpool=this.spool,target=wants?1:0,rate=wants?4.5:s.braking?10:6;
+      const surface=T.MathUtils.clamp(s.surface,0,1);
+      // Higher surface output takes a little longer to spool up so it
+      // delivers a stronger burn with a comparable initial force ramp.
+      const surfaceSpoolRate=Math.min(4.5,7/this.surfaceThrustScale);
+      const spoolUpRate=T.MathUtils.lerp(4.5,surfaceSpoolRate,surface);
+      const previousSpool=this.spool,target=wants?1:0,rate=wants?spoolUpRate:s.braking?10:6;
       this.spool=damp(this.spool,target,rate,dt);
       // Integrate the spool curve, rather than using its end-of-frame value.
       // Thrust and fuel consumption then agree at different frame rates.
@@ -99,7 +104,6 @@
       this.force.set(0,0,0);this.fuelUsed=0;this.throttle=0;
       if(s.fuel>0&&meanSpool>.00001){
         this.relative.copy(v).sub(s.frameVelocity);
-        const surface=T.MathUtils.clamp(s.surface,0,1);
         const speed=this.relative.length();
         // Aim is authoritative, including downwards. Surface authority is
         // sufficient to arrest a fall when aimed up; cruise retains its speed
@@ -177,7 +181,7 @@
         if(this.force.lengthSq()>.000001)this.direction.copy(this.force).normalize();
         this.steeringThrottle=T.MathUtils.clamp(cost/rated,0,1);
         this.throttle=Math.max(this.throttle,this.force.length()/rated,this.steeringThrottle);
-        const burn=T.MathUtils.lerp(2,10,T.MathUtils.clamp(s.surface,0,1));
+        const burn=T.MathUtils.lerp(2,10,surface);
         this.fuelUsed=this.hovering?0:Math.min(s.fuel,burn*(this.primaryForce.length()+cost)/rated*dt);
       }
       if(this.hovering&&!this.hoverLocked){
