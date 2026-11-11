@@ -90,7 +90,12 @@
     // Band-limit procedural detail at the pixel footprint. Without this,
     // kilometre-scale cloud edges sparkle and alias when seen from orbit.
     float fbm(vec3 p){float a=.55,v=0.,pixel=max(length(dFdx(p)),length(dFdy(p)));
-      for(int i=0;i<4;i++){float detail=1.-smoothstep(.15,.6,pixel);v+=a*mix(.5,noise(p),detail);p=p*2.03+vec3(12.1,7.7,19.3);pixel*=2.03;a*=.48;}return v;}`;
+      for(int i=0;i<4;i++){
+        float detail=1.-smoothstep(.15,.6,pixel);
+        // Once an octave is subpixel, its exact contribution is the mean.
+        v+=a*(detail>0.?mix(.5,noise(p),detail):.5);
+        p=p*2.03+vec3(12.1,7.7,19.3);pixel*=2.03;a*=.48;
+      }return v;}`;
   const cloudVertex=`#include <common>
     #include <logdepthbuf_pars_vertex>
     varying vec3 vNormalW,vCloud;

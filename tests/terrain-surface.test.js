@@ -14,6 +14,13 @@ const context={shoulderFlashlight:{light:{castShadow:false}},THREE:T,window:glob
  sampleEarthRuggednessLocal:()=>0,earthValueNoise3:()=>.5,earthRockTint:new T.Color(),earthSnowTint:new T.Color(),earthTileMat:new T.MeshStandardMaterial(),earthWaterMat:new T.MeshBasicMaterial()};
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('  const terrainSurface=new '),source.indexOf('  function stitchEarthSurfaceTiles(){')),context);
+function buildVisibleTile(...args){
+ const task=context.createEarthSurfaceTile(...args);
+ let result=task.next();
+ while(!result.done)result=task.next();
+ earth.mesh.add(result.value.group);
+ return result.value;
+}
 const lonCells=Math.ceil(2*Math.PI*earth.r/480),latCells=Math.ceil(Math.PI*earth.r/480);
 const coastPixels=new Uint8Array(8*4*4);
 for(let i=0;i<32;i++)if(i%8>=4)coastPixels.fill(255,i*4,i*4+3);
@@ -65,7 +72,7 @@ for(const regional of [true,false]){
  if(regional)assert.equal(flightShader.uniforms.earthRegionalAnchor,context.earthRegionalAnchor);
 }
 context.fullScaleTerrain=false;
-const fine=context.buildEarthSurfaceTile(3200,2000,lonCells,latCells,0),coarse=context.buildEarthSurfaceTile(3201,2000,lonCells,latCells,1);
+const fine=buildVisibleTile(3200,2000,lonCells,latCells,0),coarse=buildVisibleTile(3201,2000,lonCells,latCells,1);
 const surface=new GodmanTerrainSurface(T,earth.r,n=>earth.r+context.sampleEarthElevationRaster(n)+context.earthFineReliefLocal(n)+context.earthCraterDispLocal(n));
 context.earthSurfaceTiles.committedKeys=new Set([fine.key,coarse.key]);
 vm.runInContext(source.slice(source.indexOf('  function stitchEarthSurfaceTiles(){'),source.indexOf('  function updateEarthCutaway(')),context);
@@ -136,8 +143,8 @@ earth.r=6371000;
 context.fullScaleTerrain=true;
 context.earthSurfaceTiles={tiles:new Map(),tileSize:1440,lodSegments:[256,128,64,32,16],frame:0};
 const wideCols=Math.ceil(2*Math.PI*earth.r/1440),wideRows=Math.ceil(Math.PI*earth.r/1440);
-const wideFine=context.buildEarthSurfaceTile(3200,4000,wideCols,wideRows,0);
-const wideCoarse=context.buildEarthSurfaceTile(3201,4000,wideCols,wideRows,1);
+const wideFine=buildVisibleTile(3200,4000,wideCols,wideRows,0);
+const wideCoarse=buildVisibleTile(3201,4000,wideCols,wideRows,1);
 context.earthSurfaceTiles.committedKeys=new Set([wideFine.key,wideCoarse.key]);
 context.stitchEarthSurfaceTiles();
 earth.mesh.updateMatrixWorld(true);
@@ -170,7 +177,7 @@ for(let j=0;j<wideFine.N;j+=2){
 const shoreColumn=3203,shoreRow=4000,shoreAngle=(shoreColumn+.5)*2*Math.PI/wideCols;
 context.earthCoastDistance=n=>(Math.atan2(n.z,-n.x)-shoreAngle)*earth.r;
 context.earthFineReliefLocal=(n,base,d=context.earthCoastDistance(n))=>GodmanTerrainSurface.coastElevation(d,base,0,.42,10)-base;
-const beachTile=context.buildEarthSurfaceTile(shoreColumn,shoreRow,wideCols,wideRows,3);
+const beachTile=buildVisibleTile(shoreColumn,shoreRow,wideCols,wideRows,3);
 assert.ok(beachTile.waterMesh,'The crossing tile has no shoreline water');
 assert.ok(Number.isFinite(beachTile.mesh.geometry.boundingSphere.radius),'The coast contains invalid terrain vertices');
 const waterGeo=beachTile.waterMesh.geometry,waterDepth=waterGeo.attributes.earthWaterDepth;
@@ -189,7 +196,7 @@ context.earthWaterLevelLocal=(n,coast,inland)=>inland.bank<=0?inland.level:null;
 context.sampleEarthInlandWater=n=>({kind:1,level:180,bank:(Math.atan2(n.z,-n.x)-shoreAngle)*earth.r});
 context.earthFineReliefLocal=(n,base,coast,reef,inland=context.sampleEarthInlandWater(n))=>
   inland.level+inland.bank*.05-base;
-const lakeTile=context.buildEarthSurfaceTile(shoreColumn,shoreRow,wideCols,wideRows,4);
+const lakeTile=buildVisibleTile(shoreColumn,shoreRow,wideCols,wideRows,4);
 assert.ok(lakeTile.waterMesh,'The elevated lake has no water surface');
 landingSurface.stitch(lakeTile,[1,1,1,1],true);
 const lakeGeometry=lakeTile.waterMesh.geometry;
@@ -245,6 +252,7 @@ for(const section of sections){
 assert.deepEqual(rebuilt.sort(),original,'Globe sections changed the rendered triangles');
 const orbitGlobe=new T.SphereGeometry(100,8,4),globeMesh=new T.Mesh(globe);
 const orbitFixture={
+ overview:false,pos:new T.Vector3(104,0,0),earthCameraCutaway:{value:-1},
  worldSize:size=>size,
  THREE:T,fullScaleTerrain:false,sampleEarthElevationLocal:()=>8,
  earthFallbackEye:{value:new T.Vector3()},earthFallbackBlend:{value:new T.Vector2()},
@@ -270,6 +278,19 @@ orbitFixture.earth.craters=[{}];
 orbitFixture.updateEarthGlobe(new T.Vector3(1200,0,0));
 assert.equal(globeMesh.geometry,globe,'The distant mesh lost terrain deformation');
 assert.equal(globeMesh.layers.mask,1);
+orbitFixture.earth.craters=[];
+orbitFixture.earth.r=637100;
+orbitFixture.earthGlobe.maxRadius=637200;
+orbitFixture.pos.set(637104,0,0);
+orbitFixture.overview=true;
+orbitFixture.updateEarthGlobe(new T.Vector3(637304,0,0));
+assert.ok(orbitFixture.earthCameraCutaway.value>0&&orbitFixture.earthCameraCutaway.value<.02);
+orbitFixture.updateEarthGlobe(new T.Vector3(638104,0,0));
+assert.equal(orbitFixture.earthCameraCutaway.value,-1,'The overview drew walking tiles from orbit');
+assert.equal(orbitFixture.earthSurfaceCutaway.chordSq.value,.02,'Overview disturbed the player’s terrain contact');
+orbitFixture.overview=false;
+orbitFixture.updateEarthGlobe(new T.Vector3(637104,0,0));
+assert.ok(orbitFixture.earthDetailRoot.visible,'Walking terrain did not return after orbit');
 const sampleHeight=GodmanTerrainSurface.sampleHeight;
 const raster=new Uint8Array([
   4,12,8,1,0,

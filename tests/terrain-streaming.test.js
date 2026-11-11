@@ -15,7 +15,7 @@ function fixture(code,worldFactor=1){
     sampleEarthInlandWater:()=>({kind:0}),earthFineReliefLocal:()=>0,sampleEarthElevationRaster:()=>fullScaleTerrain?8849:0,
     *createEarthSurfaceTile(...args){yield;return context.buildEarthSurfaceTile(...args);},
     buildEarthSurfaceTile(ix,iy,lonCells,latCells,lod){
-      const key=ix+':'+iy+':'+lod,tile={key,group:new T.Group(),lastUsed:0};builds++;tiles.tiles.set(key,tile);earth.mesh.add(tile.group);return tile;
+      const key=ix+':'+iy+':'+lod,tile={key,group:new T.Group(),lastUsed:0};builds++;tiles.tiles.set(key,tile);return tile;
     }};
   vm.createContext(context);vm.runInContext(code.slice(code.indexOf('  function updateEarthCutaway('),code.indexOf('\n  function horizDir()',code.indexOf('  function updateEarthCutaway('))),context);
   return {context,tiles,earth,tick:(...args)=>context.updateEarthSurfaceTiles(...args),builds:()=>builds};
@@ -70,7 +70,11 @@ r.context.pos.copy(oldPosition);r.tick();
 assert.equal(r.tiles.pendingSignature,r.tiles.committedSignature,'Reversing across a boundary kept stale pending terrain');
 r.context.pos.applyAxisAngle(new T.Vector3(0,1,0),.002);settle();
 assert.notEqual(r.tiles.committedKeys,committed);
-for(const key of r.tiles.committedKeys)assert.ok(r.tiles.tiles.get(key).group.visible,'Committed terrain has a hole');
+for(const [key,tile] of r.tiles.tiles){
+ const attached=r.tiles.committedKeys.has(key);
+ assert.equal(tile.group.parent,attached?r.earth.mesh:null,'Cached terrain participates in scene traversal');
+ assert.equal(tile.group.visible,attached,'Committed terrain has a hole');
+}
 r.tiles.activeRadius=5;settle();checkCutawayCoverage(r);assert.ok(r.tiles.committedKeys.size>committed.size,'Range setting did not invalidate terrain');
 r.context.pos.set(.035,.999,0).normalize().multiplyScalar(r.earth.r);settle();checkCutawayCoverage(r);
 r.context.pos.set(0,r.earth.r,0);settle();checkCutawayCoverage(r);assert.ok(r.tiles.committedKeys.size>0,'Polar selection failed');
@@ -80,7 +84,7 @@ assert.ok(r.tiles.committedKeys.size>0,'Approach tiles were unloaded before the 
 assert.equal(r.context.earthSurfaceCutaway.chordSq.value,-1,'Detailed terrain still forms a disc in the orbital view');
 assert.equal(r.context.earthSurfaceCutaway.detail.value,0,'Local snow color remains visible just before the orbital handoff');
 r.context.pos.multiplyScalar(2);r.tick();assert.equal(r.tiles.committedKeys.size,0);assert.equal(r.context.earthSurfaceCutaway.chordSq.value,-1);
-assert.ok([...r.tiles.tiles.values()].every(t=>!t.group.visible),'Orbital view retained local tiles');
+assert.ok([...r.tiles.tiles.values()].every(t=>!t.group.visible&&!t.group.parent),'Orbital view retained local tiles');
 r.context.pos.set(-r.earth.r,0,0);settle();assert.ok(r.tiles.committedKeys.size>0,'Returning from orbit did not restore terrain');
 const fullScale=fixture(source,10);
 fullScale.context.pos.set(-(fullScale.earth.r+8849),0,0);
@@ -181,6 +185,25 @@ compactBudget.tick();
 assert.equal(compactBudget.builds(),0,'The compact scale built an entire tile in one frame');
 compactBudget.tick();
 assert.equal(compactBudget.builds(),1,'The compact scale did not resume its pending tile');
+// The first rendered frame can use a compact landing ring at either scale.
+for(const scale of [1,10]){
+ const start=fixture(source,scale);
+ let ready=false;
+ for(let i=0;i<40&&!ready;i++)ready=start.tick(0,8,null,true);
+ assert.ok(ready,'Startup waited for the full terrain range');
+ assert.equal(start.tiles.committedGrid.radius,1);
+ const landing=start.tiles.committedKeys;
+ start.tick();
+ assert.equal(start.tiles.committedKeys,landing,'The first refinement removed startup terrain');
+ checkCutawayCoverage(start);
+ const expanded=new Set();
+ for(let i=0;i<160;i++){
+  start.tick();
+  expanded.add(start.tiles.committedGrid.radius);
+ }
+ assert.ok(expanded.has(2),'Startup submitted the entire terrain range in one commit');
+ assert.equal(start.tiles.committedGrid.radius,start.tiles.activeRadius,'Startup never reached the configured terrain range');
+}
 // An eclipse can prepare a distant ground view while the menu holds the current frame.
 for(const scale of [1,10]){
  const event=fixture(source,scale);
@@ -203,7 +226,11 @@ for(const scale of [1,10]){
  }
  assert.ok(ready,'Eclipse terrain did not become ready');
  const warmedKeys=event.tiles.pendingKeys;
- for(const key of warmedKeys)assert.equal(event.tiles.tiles.get(key).group.visible,false);
+ for(const key of warmedKeys){
+  const group=event.tiles.tiles.get(key).group;
+  assert.equal(group.visible,false);
+  assert.equal(group.parent,null,'Preparing the site attached hidden meshes');
+ }
  const built=event.builds();
  site.publish=true;
  assert.ok(event.tick(0,7,site),'The event did not commit the preloaded site');

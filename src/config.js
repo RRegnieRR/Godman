@@ -5,9 +5,9 @@
     renderer: Object.freeze({
       maxPixelRatio: 2.25,
       minPixelRatio: 0.75,
-      targetFrameMs: 18.2,
-      lowerFrameMs: 23.5,
-      recoveryFrameMs: 16.8
+      targetFrameMs: 1000 / 60,
+      lowerFrameMs: 17.8,
+      recoveryFrameMs: 16.95
     }),
     atmosphere: Object.freeze({
       surfaceFogDensity: 0.00016,

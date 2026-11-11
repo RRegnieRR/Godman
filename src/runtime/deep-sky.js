@@ -225,6 +225,7 @@
       this.solarPosition = new THREE.Vector3(.513,0,0);
       this.densityScale = 1;
       this.targetDensityScale = 1;
+      this.preparePanoramaTexture = null;
     }
 
     setDensityScale(scale) {
@@ -702,8 +703,28 @@
         capacityLimit:capacityLimit,volume,panoramaUrl:spec.panoramaUrl,panoramaRequested:false,panoramaStart:null,
         observer,inverseRotation:observer?points.quaternion.clone().invert():null,
         expanding:false,lastDrawCount:0,lastLodTime:-Infinity});
-      if(spec.homeGalaxy)this.homeGalaxyBody=body;
+      if(spec.homeGalaxy){
+        this.homeGalaxyBody=body;
+        this.homeGalaxy=this.galaxies[this.galaxies.length-1];
+      }
       return body;
+    }
+
+    requestPanorama(entry) {
+      if(!entry?.panoramaUrl||entry.panoramaRequested)return;
+      entry.panoramaRequested=true;
+      new this.THREE.TextureLoader().load(entry.panoramaUrl,texture=>{
+        texture.wrapS=this.THREE.RepeatWrapping;
+        const useTexture=()=>{
+          entry.volume.material.uniforms.galacticPanorama.value=texture;
+        };
+        if(this.preparePanoramaTexture)this.preparePanoramaTexture(texture,useTexture);
+        else useTexture();
+      },undefined,()=>{}); // Keep the procedural sky if the photo is unavailable.
+    }
+
+    preloadHomePanorama() {
+      this.requestPanorama(this.homeGalaxy);
     }
 
     update(time, observer, camera, visibility, viewport) {
@@ -762,7 +783,15 @@
       }
       for (const entry of this.galaxies) {
         entry.mesh.visible=visibility>.025;
-        if(!entry.mesh.visible)continue;
+        if(!entry.mesh.visible){
+          // A prepared photo can settle behind an opaque atmosphere. The
+          // sky fade already controls its reveal, so there is no reason to
+          // ray-march the fallback volume on the first bright orbital frames.
+          if(entry.panoramaStart===null&&entry.volume?.material.uniforms.galacticPanorama.value){
+            entry.panoramaStart=time-.55;
+          }
+          continue;
+        }
         const cameraDistance=this.cameraWorld.distanceTo(entry.body.center);
         if(entry.volume){
           entry.observer.copy(this.cameraWorld).sub(entry.body.center)
@@ -771,13 +800,7 @@
           const homeRadius=cameraDistance/entry.body.r;
           const volumeFade=1-this.THREE.MathUtils.smoothstep(homeRadius,18,35);
           const fromSolar=entry.observer.distanceTo(this.solarPosition);
-          if(entry.panoramaUrl&&!entry.panoramaRequested&&fromSolar<.085){
-            entry.panoramaRequested=true;
-            new this.THREE.TextureLoader().load(entry.panoramaUrl,texture=>{
-              texture.wrapS=this.THREE.RepeatWrapping;
-              volumeUniforms.galacticPanorama.value=texture;
-            },undefined,()=>{}); // The procedural volume remains available offline if the image is missing.
-          }
+          if(fromSolar<.085)this.requestPanorama(entry);
           if(volumeUniforms.galacticPanorama.value&&entry.panoramaStart===null)entry.panoramaStart=time;
           const photoMix=entry.panoramaStart===null?0:
             (1-this.THREE.MathUtils.smoothstep(fromSolar,.018,.085))*

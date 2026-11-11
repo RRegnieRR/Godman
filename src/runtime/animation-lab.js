@@ -174,7 +174,7 @@
     const shown=cyclicMode()?t%sequenceDuration():t;
     status.textContent=(s.stage||mode.options[mode.selectedIndex].text)+' · '+shown.toFixed(2)+' / '+sequenceDuration().toFixed(1)+' s'+(s.speed?' · '+s.speed.toFixed(1)+' m/s':'')+(mode.value==='hoverhold'?' · altitude '+s.height.toFixed(2)+' m':'');
   }
-  new T.GLTFLoader().load('assets/character/rigged-astronaut.glb',gltf=>{
+  new T.GLTFLoader().load('assets/character/rigged-astronaut.glb?v=20261111.59',gltf=>{
     const model=gltf.scene;
     model.traverse(o=>{if(o.isMesh){o.frustumCulled=false;for(const m of Array.isArray(o.material)?o.material:[o.material]){if(m.color&&m.map)m.color.set(0xc45a2a);m.transparent=false;m.opacity=1;m.side=T.FrontSide;}}});
     model.updateMatrixWorld(true);const box=new T.Box3().setFromObject(model),size=box.getSize(new T.Vector3());

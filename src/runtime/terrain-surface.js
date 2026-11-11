@@ -109,7 +109,9 @@
       for(const [name,attribute] of Object.entries(globe.attributes))geometry.setAttribute(name,attribute);
       geometry.setIndex(new T.BufferAttribute(indices.subarray(start,end),1));
       geometry.boundingSphere=bounds.getBoundingSphere(new T.Sphere());
-      sections.push({geometry,center,angularRadius:Math.acos(Math.max(-1,minDot))});
+      const cosRadius=Math.max(-1,minDot);
+      const sinRadius=Math.sqrt(Math.max(0,1-cosRadius*cosRadius));
+      sections.push({geometry,center,angularRadius:Math.acos(cosRadius),cosRadius,sinRadius});
     }
     return sections;
   }

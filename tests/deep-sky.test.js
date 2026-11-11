@@ -32,6 +32,19 @@ const originalSeeds = home.mesh.geometry.attributes.randomSeed;
 
 sky.update(0, eye, camera, 0, viewport);
 assert.equal(panoramaRequests, 0, 'A bright atmosphere triggered an unnecessary sky image download');
+let finishUpload;
+sky.preparePanoramaTexture=(texture,ready)=>{
+  assert.ok(texture.isTexture);
+  finishUpload=ready;
+};
+sky.preloadHomePanorama();
+sky.preloadHomePanorama();
+assert.equal(panoramaRequests,1,'Preparing the panorama issued duplicate downloads');
+assert.equal(volume.material.uniforms.galacticPanorama.value,null,'An unprepared panorama could enter the first space frame');
+finishUpload();
+sky.update(0, eye, camera, 0, viewport);
+sky.update(0, eye, camera, 1, viewport);
+assert.equal(volume.material.uniforms.panoramaMix.value,1,'The first orbital frame ray-marched a fallback behind the prepared photo');
 for (let frame = 0; frame < 120; frame++) {
   sky.setDensityScale(frame % 2 ? .34 : 1);
   camera.rotation.y = frame * .01;
