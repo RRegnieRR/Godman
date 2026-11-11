@@ -1,4 +1,11 @@
-:root { --paper: #f1ead8; --paper-dim: rgba(241,234,216,.58); --line: rgba(241,234,216,.26); --night: rgba(5,8,15,.86); }
+:root {
+  --glass-scrim: rgb(6 10 19 / .32);
+  --glass-edge: rgb(232 242 255 / .21);
+  --glass-surface: linear-gradient(145deg, rgb(59 71 88 / .57), rgb(16 22 35 / .77));
+  --glass-highlight: rgb(239 247 255 / .11);
+  --glass-line: rgb(232 242 255 / .13);
+  --glass-accent: #c8f1e8;
+  --paper: #f1ead8; --paper-dim: rgba(241,234,216,.58); --line: rgba(241,234,216,.26); --night: rgba(5,8,15,.86); }
   html, body { margin: 0; padding: 0; overflow: hidden; background: #000; height: 100%; font-family: 'Avenir Next', 'Trebuchet MS', sans-serif; }
   canvas { display: block; }
   #hud {
@@ -66,20 +73,9 @@
   #loadText { margin-top: 14px; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; color: var(--paper-dim); }
   #overlay {
     position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; background: rgba(3,5,10,.74);
-    backdrop-filter: blur(2px);
+    align-items: center; justify-content: center; background: var(--glass-scrim);
     color: #fff; text-align: center;
   }
-  #overlay h1 { font-size: 27px; font-weight: 500; margin: 0 0 34px; letter-spacing: 11px; color: var(--paper); text-shadow: 0 0 18px rgba(235,197,145,.3); }
-  .menuBtn {
-    display: block; width: 240px; margin: 0 auto; padding: 12px 10px;
-    background: transparent; color: rgba(241,234,216,.72); border: 0; border-top: 1px solid var(--line);
-    border-radius: 0; font-size: 10px; letter-spacing: 3px; cursor: pointer; text-align: left;
-    font-family: inherit; transition: color .15s, background .15s, padding-left .15s;
-  }
-  #menuButtons .menuBtn:last-child { border-bottom: 1px solid var(--line); }
-  .menuBtn::before { content: '—'; display: inline-block; width: 27px; color: rgba(241,234,216,.3); }
-  .menuBtn:hover { background: rgba(241,234,216,.055); color: var(--paper); padding-left: 15px; }
   .panel {
     display: none; max-width: 560px; max-height: 60vh; overflow-y: auto;
     background: var(--night); border: solid var(--line); border-width: 1px 0;
@@ -91,8 +87,6 @@
   .achRow .ok { color: #7dffa8; }
   .achRow .no { color: #5a6a85; }
   .key { display: inline-block; border-bottom: 1px solid rgba(241,234,216,.45); border-radius: 0; padding: 0 3px; background: transparent; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--paper); }
-  .setRow { margin: 12px 0; }
-  .setHint { margin-top: 6px; max-width: 390px; color: rgba(220,234,255,.62); font-size: 10px; line-height: 1.45; }
   input[type=range] { width: 200px; vertical-align: middle; }
   select { background: #1a2436; color: #dceaff; border: 1px solid #4a6a9a; border-radius: 5px; padding: 3px 8px; }
   #finder {
@@ -131,3 +125,453 @@
     text-decoration: none;
   }
   #milkyWayCredit:hover { text-decoration: underline; }
+
+  #earthEvents { background: var(--glass-scrim); }
+  #overlay.settingsOpen { z-index: 12; }
+  #overlay.consoleOpen > .missionMenu { display: none; }
+  #earthEvents { position: fixed; inset: 0; z-index: 21; display: grid; place-items: center; }
+  #earthEvents[hidden], #earthEventStatus[hidden], #btnEarthEvents[hidden] { display: none; }
+  .controlPanel {
+    width: min(560px, calc(100vw - 28px));
+    max-width: none;
+    max-height: min(690px, calc(100dvh - 28px));
+    box-sizing: border-box;
+    display: flex; flex-direction: column; min-height: 0;
+    padding: 0; overflow: hidden;
+    color: #f1ebdf; text-align: left;
+    font-size: 14px; line-height: 1.45;
+  }
+  #panelSet { display: none; }
+  #overlay.settingsOpen #panelSet { display: flex; }
+  .controlHeader, .controlFooter {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; flex: 0 0 auto; padding: 19px 24px;
+  }
+  .controlHeader { border-bottom: 1px solid #ffffff14; }
+  .controlHeader h2, .panel .controlHeader h2 {
+    margin: 0; font-size: 23px; font-weight: 650; color: #f6efe2;
+    line-height: 1.2; text-align: left; letter-spacing: -.035em; text-transform: none;
+  }
+  .controlHeader p { margin: 6px 0 0; color: #aeb9c6; font-size: 13px; }
+  .controlFooter { border-top: 1px solid #ffffff14; color: #aeb9c6; font-size: 12px; }
+  .controlFooter kbd { font-family: inherit; color: #e8d5ae; }
+  .controlBody {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-color: #6d7785 transparent; scrollbar-width: thin;
+    padding: 3px 24px 13px;
+  }
+  .controlBody fieldset { min-width: 0; border: 0; margin: 15px 0 5px; padding: 0; }
+  .controlBody legend, .eventGroupTitle {
+    margin: 0; padding: 0; color: #e8d5ae; font-size: 12px; font-weight: 650;
+    letter-spacing: .035em;
+  }
+  .setting {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(155px, 42%);
+    align-items: center; gap: 5px 12px; padding: 12px 0;
+    border-bottom: 1px solid #ffffff12;
+  }
+  .setting label { font-size: 14px; font-weight: 550; }
+  .setting select {
+    box-sizing: border-box; width: 100%; min-height: 37px; padding: 6px 9px;
+    border: 1px solid #ffffff28; border-radius: 7px; background: #293441;
+    color: #f1ebdf; font: inherit; color-scheme: dark;
+  }
+  .settingHint { grid-column: 1 / -1; margin: 0; color: #aeb9c6; font-size: 12px; }
+  .settingRange { display: flex; align-items: center; gap: 10px; }
+  .settingRange input { width: 100%; min-width: 0; margin: 0; accent-color: #e6cda0; }
+  .settingRange output { min-width: 2ch; color: #e8d5ae; font-variant-numeric: tabular-nums; }
+  .setting input[role=switch] {
+    appearance: none; position: relative; justify-self: end;
+    box-sizing: border-box; width: 41px; height: 24px; margin: 0;
+    border-radius: 999px; background: #2d3745; border: 1px solid #ffffff2b; cursor: pointer;
+  }
+  .setting input[role=switch]::after {
+    content: ''; position: absolute; inset: 3px auto 3px 3px; aspect-ratio: 1;
+    background: #dfe5ec; border-radius: 50%; transition: transform .15s;
+  }
+  .setting input[role=switch]:checked { background: #e6cda0; }
+  .setting input[role=switch]:checked::after { background: #222833; transform: translateX(17px); }
+  .controlButton {
+    flex-shrink: 0; padding: 7px 12px; border-radius: 7px;
+    border: 1px solid #ffffff28; background: #222b37; color: #f1ebdf;
+    cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; min-height: 36px;
+  }
+  .controlButton:hover { background: #303c4a; }
+  .controlPanel :focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 3px; }
+  .eventGroupTitle { margin: 17px 0 6px; }
+  .earthEventChoice {
+    display: grid; grid-template-columns: 1fr auto; width: 100%; padding: 10px 11px; margin: 0 0 5px;
+    border: 1px solid #ffffff14; border-radius: 8px; background: #19212d;
+    color: inherit; font: inherit; cursor: pointer; text-align: left;
+  }
+  .earthEventChoice:hover, .earthEventChoice[aria-current=true] { background: var(--glass-highlight); border-color: var(--glass-edge); }
+  .earthEventChoice strong { grid-column: 1; font-weight: 650; }
+  .earthEventChoice small { grid-column: 1; color: #adb9c8; margin-top: 2px; }
+  .earthEventChoice::after { content: '›'; grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #e8d5ae; }
+  #earthEventStatus {
+    position: fixed; bottom: 23px; left: 50%; transform: translateX(-50%); z-index: 6;
+    padding: 7px 12px; border: 1px solid #ffffff24; border-radius: 8px;
+    background: #0d131de6; color: #f1ebdf; text-align: center; pointer-events: none;
+    font-size: 12px;
+  }
+  @media (max-width: 420px) {
+    .controlHeader, .controlFooter { padding: 14px; }
+    .controlBody { padding-inline: 14px; }
+    .setting { grid-template-columns: minmax(0, 1fr) minmax(112px, 45%); }
+    #earthEventStatus { bottom: 49px; }
+  }
+
+  .iconLibrary { position: absolute; overflow: hidden; pointer-events: none; }
+  .uiIcon { width: 20px; height: 20px; flex: 0 0 auto; vertical-align: middle; }
+  .loaderMark { margin-bottom: 15px; }
+  .missionMenu, .controlPanel {
+    color: #f5f7fa;
+    background: var(--glass-surface); border: 1px solid var(--glass-edge);
+    border-radius: 21px; box-shadow: inset 0 1px var(--glass-highlight), 0 22px 70px #0005;
+    -webkit-backdrop-filter: blur(24px) saturate(1.12);
+    backdrop-filter: blur(24px) saturate(1.12);
+  }
+  .missionMenu {
+    width: min(330px, calc(100vw - 28px)); max-height: calc(100dvh - 28px);
+    box-sizing: border-box; padding: 20px; overflow: auto; overscroll-behavior: contain;
+  }
+  .missionCover { display: flex; align-items: center; justify-content: center; gap: 11px; padding: 4px 0 20px; }
+  .missionCover h1 { margin: 0; font: 600 28px/1.1 Inter, 'Avenir Next', sans-serif; letter-spacing: -.04em; }
+  #menuButtons { display: grid; gap: 4px; }
+  #menuButtons .gameMenuAction {
+    width: 100%; min-height: 42px; padding: 7px 12px;
+    display: grid; grid-template-columns: 20px minmax(0,1fr) auto; align-items: center; gap: 10px;
+    border: 1px solid transparent; border-radius: 10px; background: transparent;
+    color: inherit; text-align: left; font: inherit; font-size: 14px; font-weight: 550; cursor: pointer;
+  }
+  #menuButtons .gameMenuAction:hover { background: var(--glass-highlight); }
+  #menuButtons .gameMenuAction:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 1px; }
+  #menuButtons .gameMenuAction .uiIcon { width: 18px; height: 18px; opacity: .85; }
+  #menuButtons #btnResume { margin-bottom: 6px; }
+  #menuButtons #btnResume, .primaryButton {
+    background: #e4f1f1; color: #142129; border-color: #ffffff40;
+  }
+  #menuButtons #btnResume:hover, .primaryButton:hover { background: #f5ffff; }
+  #menuButtons #btnEarthEvents[hidden] { display: none; }
+
+  #menuButtons kbd, .controlPanel kbd {
+    display: inline-grid; place-items: center; min-width: 20px; min-height: 21px;
+    padding: 0 4px; box-sizing: border-box; color: #dbe8f1;
+    background: #ffffff08; border: 1px solid var(--glass-line); border-bottom-width: 2px;
+    border-radius: 4px; font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  #panelSet { width: min(720px, calc(100vw - 28px)); }
+  .eventsConsole { width: min(870px, calc(100vw - 28px)); }
+  .controlHeader { padding: 13px 17px; min-height: 46px; border-color: var(--glass-line); }
+  .consoleHeading, .pausedLabel, .controlButton, .eventShortcut, .eventActions {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .consoleGlyph { display: grid; place-items: center; width: 30px; height: 30px; color: #d0e1ed; flex: none; }
+  .controlButton { justify-content: center; border-radius: 9px; }
+  .controlButton:not(.primaryButton) { background: rgb(240 248 255 / .07); border-color: var(--glass-line); }
+  .controlButton:not(.primaryButton):hover { background: var(--glass-highlight); }
+  .controlButton .uiIcon, .pausedLabel .uiIcon { width: 16px; height: 16px; }
+  .pausedLabel .uiIcon { color: var(--glass-accent); }
+  .controlFooter { padding: 13px 17px; border-color: var(--glass-line); }
+  .settingsWorkspace, .eventWorkspace {
+    display: grid; min-height: 0; flex: 1 1 auto;
+  }
+  .settingsWorkspace { grid-template-columns: 154px minmax(0,1fr); }
+  .settingsNav {
+    min-width: 0; padding: 12px 9px; border-right: 1px solid #ffffff12; background: rgb(10 16 26 / .12);
+  }
+  .settingsNav button {
+    display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px;
+    padding: 8px; margin-bottom: 3px; border: 1px solid transparent; border-radius: 6px;
+    color: #b6c0cc; background: transparent; font: inherit; font-weight: 650; text-align: left; cursor: pointer;
+  }
+  .settingsNav button:hover { background: var(--glass-highlight); }
+  .settingsNav button[aria-selected=true] {
+    color: #f0f9ff; background: var(--glass-highlight); border-color: var(--glass-edge);
+  }
+  .settingsNav .uiIcon { width: 18px; height: 18px; color: #c8dbe8; }
+  #settingsBody { min-height: min(275px, 45dvh); padding: 12px 20px 15px; }
+  #settingsBody h3, .eventBrief h3 {
+    margin: 4px 0 8px; color: #f5ebd9; font-size: 17px; font-weight: 650; line-height: 1.3;
+  }
+  #settingsBody [role=tabpanel][hidden] { display: none; }
+  .flightKeys {
+    display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px;
+    margin: 16px 0 2px; padding: 0;
+  }
+  .flightKeys div { min-width: 0; border: 1px solid #ffffff17; border-radius: 6px; padding: 8px; background: rgb(240 248 255 / .05); }
+  .flightKeys dt { display: flex; gap: 3px; flex-wrap: wrap; }
+  .flightKeys dd { margin: 4px 0 0; color: #b4bdc8; font-size: 12px; }
+  .worldPreview {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    min-height: 92px; padding: 6px 13px; border: 1px solid #83b7b837; border-radius: 7px;
+    background: rgb(240 248 255 / .05);
+  }
+  .worldPreview p { margin: 0; color: #b5c6ce; font-size: 12px; }
+  .earthPortrait {
+    width: 74px; height: 74px; flex: 0 0 auto; border-radius: 50%;
+    background: radial-gradient(circle at 28% 34%, #0000 17%, #0002 41%, #04070ce0 78%),
+      url('../assets/earth/earth_day_2048.jpg') 41% 52% / 170% 100%;
+    box-shadow: inset 4px 0 10px #7fbce780, 0 0 18px #76aab544;
+  }
+  .eventWorkspace { grid-template-columns: minmax(0, .93fr) minmax(0, 1.07fr); }
+  .eventCatalog { padding: 6px 11px 12px; border-right: 1px solid #ffffff14; }
+  .eventGroupTitle { margin: 12px 2px 5px; display: flex; gap: 6px; align-items: center; }
+  .eventGroupTitle .uiIcon { width: 15px; height: 15px; }
+  .earthEventChoice {
+    grid-template-columns: 26px minmax(0, 1fr) 12px; gap: 8px; align-items: center;
+    min-height: 37px; padding: 6px 8px; margin-bottom: 3px; border-radius: 8px; background: rgb(240 248 255 / .04);
+  }
+  .earthEventChoice strong { grid-column: 2; font-size: 13px; }
+  .earthEventChoice::after { grid-column: 3; grid-row: 1; opacity: .55; }
+  .earthEventChoice[aria-pressed=true] { background: var(--glass-highlight); border-color: var(--glass-edge); }
+  .earthEventChoice[aria-current=true] strong::after { content: ' •'; color: #9ed4c9; }
+  .eventMini {
+    grid-column: 1; width: 21px; height: 21px; border-radius: 50%;
+    background: radial-gradient(circle at 34% 32%, #deddd3, #8d9291 57%, #40495a 81%);
+    box-shadow: 0 0 0 1px #ffffff20;
+  }
+  [data-event=total-solar] .eventMini { background: #0a0c10; box-shadow: 0 0 0 1px #e3dfd0, 0 0 7px #dac39880; }
+  [data-event=annular] .eventMini { background: #0a0c10; box-shadow: inset 0 0 0 2px #ffd28a,0 0 6px #c88a4c70; }
+  [data-event=partial-solar] .eventMini { background: radial-gradient(circle at 32% 30%, #0a0c10 54%, #e4b679 60%, #f2d59e 79%); }
+  [data-event=blood-moon] .eventMini { background: radial-gradient(circle at 34% 32%, #dd865b, #9c3f27 64%, #3c1c18 84%); }
+  [data-event=partial-lunar] .eventMini { background: radial-gradient(circle at 32% 33%, #33333d 49%, #9e9892 64%, #d1cfc3 77%); }
+  [data-event=penumbral] .eventMini { filter: brightness(.78); }
+  [data-event=crescent] .eventMini { background: radial-gradient(circle at 35% 34%, #101722 57%, #aaa99e 63%, #ebdfc3 78%); }
+  [data-event=sunset] .eventMini { background: linear-gradient(#b96d53 53%, #f8bb76 56%, #302535 61%); }
+  .eventPreview { padding: 13px; min-width: 0; overflow: auto; overscroll-behavior: contain; }
+  .eventScene {
+    --diameter: clamp(61px, 12vw, 109px);
+    position: relative; display: grid; place-items: center; isolation: isolate;
+    width: 100%; aspect-ratio: 1.58; overflow: hidden;
+    border: 1px solid #d6c18b35; border-radius: 8px;
+    background:
+      radial-gradient(circle at 16% 29%,#dae4ebba 0 1px,transparent 1.5px),
+      radial-gradient(circle at 83% 34%,#cedfef 0 1px,transparent 1.5px),
+      radial-gradient(circle at 26% 70%,#cddceab0 0 .7px,transparent 1.3px),
+      radial-gradient(circle at 74% 77%,#bfd1e2aa 0 .7px,transparent 1.3px),
+      radial-gradient(circle at 71% 14%,#cbd7e499 0 .7px,transparent 1.3px),
+      radial-gradient(ellipse at 50% 45%,#273445,#0c141f 58%,#090e16);
+  }
+  .skyGuide {
+    position: absolute; width: 68%; aspect-ratio: 1; max-height: 87%;
+    border: 1px dashed #b7c5d124; border-radius: 50%; transform: rotate(-18deg) scaleY(.67);
+  }
+  .skyGuide::after {
+    content: ''; position: absolute; width: 6px; height: 6px; border-radius: 50%;
+    background: #d8bf8d; top: 72%; left: 7%; box-shadow: 0 0 8px #e7c79796;
+  }
+  .skyDisc, .skyShadow {
+    display: block; position: absolute; width: var(--diameter); aspect-ratio: 1; border-radius: 50%;
+  }
+  .skyDisc {
+    background:
+      radial-gradient(ellipse at 36% 40%, #52617872 0 9%, transparent 13%),
+      radial-gradient(ellipse at 58% 57%, #4e5a6480 0 13%, transparent 18%),
+      radial-gradient(ellipse at 63% 29%, #6368757d 0 8%, transparent 12%),
+      radial-gradient(circle at 31% 28%, #f4eee0, #adb2b6 55%, #707c88 84%);
+    box-shadow: inset -7px -5px 15px #28314182, 0 0 25px #c9dbe44d;
+  }
+  .skyShadow, .skyHorizon { display: none; }
+  .eventScene:is([data-event=total-solar],[data-event=annular],[data-event=partial-solar]) .skyDisc {
+    background: radial-gradient(circle, #fff3d5, #ffc879 70%, #f3aa5b 94%);
+    box-shadow: 0 0 20px #ffba7b8c,0 0 65px #f2ae4d43;
+  }
+  .eventScene:is([data-event=total-solar],[data-event=annular],[data-event=partial-solar]) .skyShadow {
+    display: block; background: radial-gradient(circle at 65% 66%,#171d28,#080c13 65%);
+  }
+  .eventScene[data-event=total-solar] .skyDisc {
+    box-shadow: 0 0 7px 4px #fcf7e6,0 0 20px 8px #dee7efaa,0 0 44px #b4c9dc80;
+  }
+  .eventScene[data-event=total-solar] .skyShadow { transform: scale(1.035); }
+  .eventScene[data-event=annular] .skyShadow { transform: scale(.88); }
+  .eventScene[data-event=partial-solar] .skyShadow { transform: translate(-26%,-22%); }
+  .eventScene[data-event=blood-moon] .skyDisc {
+    background:
+      radial-gradient(ellipse at 36% 40%, #572b25af 0 9%, transparent 14%),
+      radial-gradient(ellipse at 63% 60%, #6226239a 0 15%, transparent 20%),
+      radial-gradient(circle at 34% 34%, #f3a574, #a84b32 62%, #502627 90%);
+    box-shadow: inset -7px -5px 15px #3412218e,0 0 26px #be573f5c;
+  }
+  .eventScene[data-event=partial-lunar] .skyShadow {
+    display: block; background: linear-gradient(139deg,#4d292d 20%,#201924 47%,transparent 58%);
+  }
+  .eventScene[data-event=penumbral] .skyShadow { display: block; background: linear-gradient(130deg,#232632ba,transparent 65%); }
+  .eventScene[data-event=supermoon] .skyDisc { transform: scale(1.14); }
+  .eventScene[data-event=crescent] .skyDisc { background: radial-gradient(circle at 35% 37%, #151d2a 55%, #c9c7be 59%, #e0d4b5 75%); box-shadow: 0 0 20px #9aaabb32; }
+  .eventScene[data-event=sunset] { background: linear-gradient(#283147 8%,#88555a 42%,#de8466 60%,#e9ab79 72%,#372b36 73%); }
+  .eventScene[data-event=sunset] .skyDisc {
+    width: calc(var(--diameter)*.61); top: 45%; background: #ffda9c; box-shadow: 0 0 35px #ffc07fb5;
+  }
+  .eventScene[data-event=sunset] .skyHorizon {
+    display: block; position: absolute; inset: 49% 0 0; background: linear-gradient(#4b3542,#221e2a);
+    clip-path: polygon(0 53%,16% 41%,26% 46%,36% 31%,49% 50%,62% 41%,74% 20%,84% 36%,100% 26%,100% 100%,0 100%);
+  }
+  .eventBrief { padding: 12px 1px 2px; }
+  .eventBrief p { margin: 0; color: #b9c4ce; font-size: 13px; }
+  .eventBrief .eventCategory { color: #dbbd89; font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .eventBrief h3 { margin: 5px 0; }
+  .eventViewingHint {
+    margin: 13px 0 0; padding: 8px 0 0; border-top: 1px solid #a6c8cc2b;
+    color: #9ab8bf; font-size: 12px;
+  }
+  .eventActions [hidden] { display: none; }
+  @media (max-width: 650px) {
+    .eventWorkspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
+    .eventPreview {
+      grid-row: 1; display: grid; grid-template-columns: minmax(83px, .45fr) minmax(0,1fr); gap: 10px;
+      padding: 8px 11px; border-bottom: 1px solid #ffffff14;
+    }
+    .eventScene { --diameter: clamp(25px, 6vw, 50px); aspect-ratio: 1.9; align-self: center; }
+    .eventBrief { padding: 1px 0; }
+    .eventBrief h3 { font-size: 15px; }
+    .eventBrief p { font-size: 11px; }
+    .eventViewingHint { grid-column: 1 / -1; margin: 0; padding: 5px 0 0; font-size: 10px; }
+    .eventCatalog { border-right: 0; }
+  }
+  @media (max-width: 520px) {
+    .settingsWorkspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0,1fr); }
+    .settingsNav { display: flex; gap: 4px; border-right: 0; border-bottom: 1px solid #ffffff12; padding: 7px; }
+    .settingsNav button { flex: 1; justify-content: center; gap: 5px; margin: 0; padding-inline: 4px; font-size: 12px; }
+      #settingsBody { padding-inline: 12px; }
+    .controlHeader, .controlFooter { padding: 10px; }
+    .eventShortcut { gap: 3px; }
+    .eventShortcut span { display: none; }
+    .eventActions { gap: 5px; }
+    .eventActions .controlButton { font-size: 11px; padding-inline: 7px; }
+  }
+  @media (max-width: 355px) {
+    .flightKeys { grid-template-columns: 1fr; }
+    .flightKeys div { display: flex; align-items: center; gap: 8px; }
+    .flightKeys dd { margin: 0; }
+    .eventShortcut kbd:first-child { display: none; }
+  }
+
+  #earthEventStatus:not([hidden]) { display: flex; align-items: center; justify-content: center; gap: 8px; max-width: 86vw; }
+  #earthEventReadout:not(:empty) { padding-left: 8px; border-left: 1px solid #ffffff33; color: #a8d5cd; }
+  #earthEventStatus kbd { padding: 1px 5px; border: 1px solid #e3c48d50; border-radius: 4px; color: #f0d8ac; }
+
+  #panelAch, #panelInfo { display: none; width: min(820px, calc(100vw - 28px)); }
+  .logBody, .flightBody { padding: 16px 17px; }
+  .logHero, .flightHero {
+    display: grid; align-items: center; gap: 20px; min-height: 134px;
+    border: 1px solid var(--glass-line); border-radius: 12px;
+    background: rgb(238 247 255 / .045);
+  }
+  .logHero {
+    grid-template-columns: 168px minmax(0,1fr); padding: 9px 24px 9px 0;
+  }
+  .logPlanet { position: relative; display: grid; place-items: center; min-height: 124px; }
+  .logPlanet::before, .logPlanet::after {
+    content: ''; position: absolute; pointer-events: none; border: 1px solid #a1d1c870; border-radius: 50%;
+  }
+  .logPlanet::before { width: 109px; height: 109px; border-style: dashed; opacity: .55; }
+  .logPlanet::after { width: 137px; height: 49px; transform: rotate(-28deg); border-color: #a5c3a85c; }
+  .logPlanet .earthPortrait { width: 86px; height: 86px; }
+  .logSummary h3, .flightHero h3, .flightCard h3 {
+    margin: 0; color: #f5f7fa; font: 600 16px/1.25 Inter, 'Avenir Next', sans-serif;
+  }
+  .logCount { display: flex; align-items: baseline; gap: 9px; color: #bbcad0; }
+  .logCount strong { font: 650 34px/1.1 ui-monospace, Menlo, monospace; color: #caeee3; }
+  .logSummary progress {
+    display: block; appearance: none; width: 100%; height: 5px; margin: 8px 0; border: 0;
+    border-radius: 3px; background: #5c777944; accent-color: #a0d4c6; overflow: hidden;
+  }
+  .logSummary progress::-webkit-progress-bar { background: #5c777944; }
+  .logSummary progress::-webkit-progress-value { background: linear-gradient(90deg, #5f9c99, #b6e6d7); }
+  .logSummary progress::-moz-progress-bar { background: #a0d4c6; }
+  .logSummary p { margin: 0; color: #b4c4ca; font-size: 12px; }
+  .logTools { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 13px 0 9px; }
+  .logSearch {
+    display: flex; align-items: center; gap: 8px; padding-inline: 9px;
+    min-width: 0; border-radius: 6px; border: 1px solid var(--glass-line); background: rgb(11 18 29 / .22); color: #add2c9;
+  }
+  .logSearch:focus-within { border-color: var(--glass-accent); }
+  .logSearch .uiIcon { width: 17px; height: 17px; flex: none; }
+  .logSearch input {
+    min-height: 34px; width: 100%; min-width: 0; color: #f1ebdf; background: transparent; border: 0;
+    font: inherit; font-size: 13px; color-scheme: dark;
+  }
+  .logSearch input:focus-visible { outline: none; }
+  .logFilters { display: flex; gap: 4px; }
+  .logFilters button {
+    border: 1px solid transparent; border-radius: 5px; padding: 7px 9px;
+    background: transparent; color: #b7c3cd; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .logFilters button:hover { background: var(--glass-highlight); }
+  .logFilters button[aria-pressed=true] { color: #f0f9ff; background: var(--glass-highlight); border-color: var(--glass-edge); }
+  .logGrid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 7px; }
+  .worldLogCard {
+    display: grid; grid-template-columns: 35px minmax(0,1fr) auto; gap: 9px; align-items: center;
+    border: 1px solid var(--glass-line); border-radius: 9px;
+    background: rgb(239 247 255 / .035); min-height: 52px; padding: 5px 10px;
+  }
+  .worldLogCard[data-recorded=true] { border-color: #a4e0d24d; background: #a4e0d214; }
+  .worldLogCard strong, .worldLogCard small { display: block; overflow-wrap: anywhere; }
+  .worldLogCard small { font: 10px/1.25 ui-monospace, Menlo, monospace; color: #aebdca; letter-spacing: .05em; }
+  .worldLogEmblem {
+    width: 26px; height: 26px; border-radius: 50%; margin: auto;
+    outline: 1px solid #ffffff20; outline-offset: 3px;
+    background: radial-gradient(circle at 34% 24%, #ffffff60, transparent 47%, #05070be0 86%), var(--world-tone);
+  }
+  .worldLogEmblem[data-earth=true] {
+    background: radial-gradient(circle at 31% 29%, transparent 27%, #05070bc0 82%),
+      url('../assets/earth/earth_day_2048.jpg') 41% 52% / 170% 100%;
+  }
+  .worldLogMark { color: #acb8c3; font: 11px ui-monospace, Menlo, monospace; }
+  [data-recorded=true] .worldLogMark { color: #b6e6d7; }
+  [data-recorded=true] .worldLogMark::before { content: '✓ '; }
+  .logEmpty { grid-column: 1/-1; padding: 16px; color: #b6c1cb; text-align: center; }
+
+  .flightHero {
+    grid-template-columns: minmax(0,1fr) 165px; padding: 7px 18px;
+  }
+  .flightHero h3 { font-size: 20px; }
+  .flightHero p { margin: 4px 0 12px; color: #c5d3d6; font-size: 13px; }
+  .suitDiagram { width: 100%; height: auto; max-height: 126px; }
+  .flightMeter {
+    height: 7px; border-radius: 3px;
+    background: repeating-linear-gradient(90deg, transparent 0 calc(6.25% - 2px), #132027 calc(6.25% - 2px) 6.25%),
+      linear-gradient(90deg, #5eaca8, #c9e5d3 65%, #eed09d);
+  }
+  .meterLegend {
+    display: flex; justify-content: space-between; gap: 5px; margin-top: 5px;
+    color: #c0d2d3; font: 10px/1.3 ui-monospace, Menlo, monospace;
+  }
+  .flightCards { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; margin-top: 11px; }
+  .flightCard { border: 1px solid var(--glass-line); border-radius: 10px; padding: 11px 12px 5px; }
+  .flightCard h3 { display: flex; align-items: center; gap: 7px; }
+  .flightCard h3 .uiIcon { color: #9ed4c9; width: 16px; height: 16px; }
+  .flightCard dl { margin: 5px 0 0; }
+  .flightCard dl div { padding: 7px 0; border-top: 1px solid #bfc7cf1f; }
+  .flightCard dt { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  .flightCard dt strong { margin-left: 3px; font-size: 12px; color: #e7dec9; }
+  .flightCard dd { margin: 4px 0 0; font-size: 12px; color: #bfcad3; }
+  .flightUtilities { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 11px 0 0; }
+  .flightUtilities span { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #c8d1d7; }
+  .flightNote { margin: 11px 0 0; font-size: 12px; color: #b4c4ca; }
+  .flightNote strong { color: #e9d4aa; }
+  .flightNote span { margin-left: 9px; padding-left: 9px; border-left: 1px solid #bfc7cf44; }
+  #eventsLaunch:disabled { color: #b6bdc4; background: #252e38; border-color: #ffffff24; cursor: wait; }
+  .siteStatus { color: #b3c8ce; font-size: 12px; }
+  .siteStatus[data-ready=true] { color: #b6e6d7; }
+  .eventViewShortcut { white-space: nowrap; color: #ddd3bf; }
+
+  @media (max-width: 560px) {
+    .logBody, .flightBody { padding: 11px; }
+    .logConsole .controlHeader, .flightConsole .controlHeader { gap: 8px; }
+    .controlHeader h2, .panel .controlHeader h2 { font-size: clamp(16px, 5.5vw, 21px); }
+    .logConsole .consoleGlyph, .flightConsole .consoleGlyph { width: 31px; height: 31px; flex: none; }
+    .logHero { grid-template-columns: 100px minmax(0,1fr); gap: 10px; padding-right: 10px; min-height: 110px; }
+    .logPlanet { min-height: 96px; }
+    .logPlanet .earthPortrait { width: 57px; height: 57px; }
+    .logPlanet::before { width: 73px; height: 73px; }
+    .logPlanet::after { width: 87px; height: 32px; }
+    .logTools { flex-wrap: wrap; }
+    .logSearch { flex: 1 1 100%; }
+    .logGrid, .flightCards { grid-template-columns: 1fr; }
+    .flightHero { grid-template-columns: minmax(0,1fr) 82px; gap: 7px; padding: 9px; }
+    .flightNote span { display: block; margin: 3px 0 0; padding: 0; border: 0; }
+    #earthEventStatus:not([hidden]) { flex-wrap: wrap; gap: 4px 8px; }
+  }

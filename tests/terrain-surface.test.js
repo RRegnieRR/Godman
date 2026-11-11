@@ -6,6 +6,7 @@ const earth={r:637100,mesh:new T.Group()},crater={strength:0,center:new T.Vector
 const context={shoulderFlashlight:{light:{castShadow:false}},THREE:T,window:global,earth,earthDetailRoot:earth.mesh,EARTH_SEA_LEVEL:.42,earthSurfaceTiles:{tiles:new Map(),lodSegments:[128,64,32,16],frame:0},
  fullScaleTerrain:false,worldFactor:1,V3:(x,y,z)=>new T.Vector3(x,y,z),sampleEarthElevationRaster:()=>100,
  earthCoastDistance:()=>Infinity,earthReefAt:()=>0,worldMeters:meters=>meters/10,
+ earthInlandLevel:inland=>inland.level,
  sampleEarthInlandWater:()=>({kind:0}),earthWaterLevelLocal:(n,coast,inland)=>inland.kind?(inland.bank<=0?inland.level/10:null):(coast<0?.42:null),
  earthFineReliefLocal:n=>6*Math.sin(n.x*earth.r/24)+9*Math.cos(n.z*earth.r/37),
  earthCraterDispLocal:n=>-crater.strength*Math.exp(-((n.distanceTo(crater.center)*earth.r/60)**2)),
@@ -146,6 +147,22 @@ const middle=(wideFine.N>>1)*wideFine.N+(wideFine.N>>1);
 const landingPoint=point(wideFine,middle);
 const landingRadius=landingSurface.tileRadius(wideFine,.5,.5,landingPoint.clone().normalize());
 assert.ok(Math.abs(landingRadius-landingPoint.length())<.001,'Ground collision missed the rendered landing surface');
+// Contact must use the currently rendered triangles at either world scale.
+const collisionStart=source.indexOf('  function earthSurfaceRadiusWorld(');
+vm.runInContext(source.slice(collisionStart,source.indexOf('  function earthAlbedoLocal(',collisionStart)),context);
+context.earthTileQ=new T.Quaternion();
+context.earthTileN=new T.Vector3();
+context.earthSurfaceTiles.committedGrid={lonCells:wideCols,latCells:wideRows};
+context.earthSurfaceTiles.committedCenter=wideFine.center.clone();
+context.earthSurfaceCutaway.chordSq.value=.001;
+const landingNormal=landingPoint.clone().normalize();
+context.earthWaterLevelLocal=()=>null;
+for(const fullScale of [false,true]){
+ context.fullScaleTerrain=fullScale;
+ assert.ok(Math.abs(context.earthSurfaceRadiusWorld(landingNormal,false)-landingRadius)<.001,
+  'Ground contact used a different surface from the rendered terrain');
+}
+context.earthWaterLevelLocal=(n,coast,inland)=>inland.kind?(inland.bank<=0?inland.level/10:null):(coast<0?.42:null);
 for(let j=0;j<wideFine.N;j+=2){
  assert.ok(point(wideFine,j*wideFine.N+wideFine.N-1).distanceTo(point(wideCoarse,(j/2)*wideCoarse.N))<.0003,
   'Extended 1:1 tiles do not share an exact edge');

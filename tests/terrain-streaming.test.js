@@ -10,13 +10,15 @@ function fixture(code,worldFactor=1){
   const earth={r:637100*worldFactor,center:new T.Vector3(),mesh:new T.Group()};
   let builds=0;
   const context={window:global,stitchEarthSurfaceTiles(){},THREE:T,worldFactor,earth,earthSurfaceTiles:tiles,earthElevation:{ready:true},pos:new T.Vector3(-earth.r,0,0).applyAxisAngle(new T.Vector3(0,1,0),.0004),earthTileQ:new T.Quaternion(),earthTileN:new T.Vector3(),earthSurfaceCutaway:{center:{value:new T.Vector3()},chordSq:{value:-1},detail:{value:1}},performance:{now:()=>0},
-    earthDetailRoot:earth.mesh,fullScaleTerrain,earthHydrographyLoading:false,earthWaterLevelLocal:()=>null,sampleEarthElevationRaster:()=>fullScaleTerrain?8849:0,
+    earthDetailRoot:earth.mesh,fullScaleTerrain,worldMeters:m=>m*worldFactor/10,
+    earthHydrographyLoading:false,earthWaterLevelLocal:()=>null,earthCoastDistance:()=>Infinity,
+    sampleEarthInlandWater:()=>({kind:0}),earthFineReliefLocal:()=>0,sampleEarthElevationRaster:()=>fullScaleTerrain?8849:0,
     *createEarthSurfaceTile(...args){yield;return context.buildEarthSurfaceTile(...args);},
     buildEarthSurfaceTile(ix,iy,lonCells,latCells,lod){
       const key=ix+':'+iy+':'+lod,tile={key,group:new T.Group(),lastUsed:0};builds++;tiles.tiles.set(key,tile);earth.mesh.add(tile.group);return tile;
     }};
   vm.createContext(context);vm.runInContext(code.slice(code.indexOf('  function updateEarthCutaway('),code.indexOf('\n  function horizDir()',code.indexOf('  function updateEarthCutaway('))),context);
-  return {context,tiles,earth,tick:speed=>context.updateEarthSurfaceTiles(speed),builds:()=>builds};
+  return {context,tiles,earth,tick:(...args)=>context.updateEarthSurfaceTiles(...args),builds:()=>builds};
 }
 const r=fixture(source);
 function settle(){let frames=0;do{r.tick();assert.ok(++frames<300,'Terrain never committed');}while(r.tiles.committedSignature!==r.tiles.pendingSignature);}
@@ -120,6 +122,50 @@ for(let i=0;i<120;i++){
  if(fullScale.tiles.committedSignature.endsWith(':landing')&&[...fullScale.tiles.committedKeys].some(key=>key.endsWith(':1')))focused=true;
 }
 assert.ok(focused,'High-definition terrain did not appear at the landing point before the outer ring');
+// Keep the same coverage when a flight path crosses the dry edge of a high lake.
+for(const scale of [1,10]){
+ const lake=fixture(source,scale),{context}=lake;
+ const level=3400*scale/10,clearance=2300;
+ context.sampleEarthElevationRaster=()=>level-2000*scale/10;
+ context.earthFineReliefLocal=()=>2000*scale/10;
+ context.earthWaterLevelLocal=()=>level;
+ context.pos.set(-(lake.earth.r+level+clearance),0,0);
+ for(let i=0;i<160;i++)lake.tick();
+ const wetCap=context.earthSurfaceCutaway.chordSq.value;
+ assert.ok(wetCap>0,'A high lake lost coverage while flying');
+ context.earthWaterLevelLocal=()=>null;
+ lake.tick();
+ assert.equal(context.earthSurfaceCutaway.chordSq.value,wetCap,'Crossing the shore changed the terrain footprint at the same clearance');
+}
+const hovering=fixture(source,10);
+const setClearance=metres=>hovering.context.pos.set(-(hovering.earth.r+8849+metres),0,0);
+setClearance(1000);
+for(let i=0;i<160;i++)hovering.tick(499);
+const flightRing=hovering.tiles.committedKeys;
+const flightCap=hovering.context.earthSurfaceCutaway.chordSq;
+for(let i=0;i<20;i++){
+ const last=flightCap.value;
+ setClearance(i%2?951:949);
+ hovering.tick(i%2?501:499);
+ assert.equal(hovering.tiles.committedKeys,flightRing,'Small speed changes reselected the visible terrain');
+ assert.ok(flightCap.value>0,'Terrain blinked out at the old fast-flight threshold');
+ assert.ok(Math.abs(flightCap.value-last)<hovering.tiles.terrainChordSq*.08,'Terrain footprint jumped at the old fast-flight threshold');
+}
+setClearance(2000);
+hovering.tick(650);
+assert.equal(flightCap.value,-1,'Fast overflight rendered close terrain too far below');
+assert.equal(hovering.tiles.committedKeys,flightRing,'Fast overflight discarded the cached terrain');
+setClearance(700);
+hovering.tick(650);
+assert.ok(flightCap.value>0,'A cached ring failed to return on descent');
+setClearance(65);
+hovering.tick(150);
+assert.equal(hovering.tiles.flightLod,true);
+for(const altitude of [39,41,38,42]){
+ setClearance(altitude);
+ hovering.tick(150);
+ assert.equal(hovering.tiles.flightLod,true,'Small altitude oscillations toggled mesh resolution');
+}
 const paced=fixture(source,10);
 let clock=0;
 paced.context.performance.now=()=>clock+=3;
@@ -128,6 +174,50 @@ assert.equal(paced.builds(),0,'The tile build overran the per-frame budget');
 assert.equal(paced.tiles.committedKeys.size,0,'A partially built terrain tile was committed');
 paced.tick();
 assert.equal(paced.builds(),1,'The next frame did not resume the same tile build');
+const compactBudget=fixture(source);
+let compactClock=0;
+compactBudget.context.performance.now=()=>compactClock+=3;
+compactBudget.tick();
+assert.equal(compactBudget.builds(),0,'The compact scale built an entire tile in one frame');
+compactBudget.tick();
+assert.equal(compactBudget.builds(),1,'The compact scale did not resume its pending tile');
+// An eclipse can prepare a distant ground view while the menu holds the current frame.
+for(const scale of [1,10]){
+ const event=fixture(source,scale);
+ for(let i=0;i<160;i++)event.tick();
+ const currentKeys=event.tiles.committedKeys;
+ const cutaway=event.context.earthSurfaceCutaway;
+ const currentCap=cutaway.chordSq.value;
+ const currentPosition=event.context.pos.clone();
+ const site={
+  position:currentPosition.clone().applyAxisAngle(new T.Vector3(0,1,0),.04)
+   .setLength(event.earth.r+(scale===10?8849:0)),
+  publish:false
+ };
+ let ready=false;
+ for(let i=0;i<160&&!ready;i++){
+  ready=event.tick(0,7,site);
+  assert.equal(event.tiles.committedKeys,currentKeys,'Warming an eclipse moved the visible terrain');
+  assert.equal(cutaway.chordSq.value,currentCap,'Warming an eclipse changed the current cutaway');
+  assert.ok(event.context.pos.equals(currentPosition),'Warming an eclipse moved the player');
+ }
+ assert.ok(ready,'Eclipse terrain did not become ready');
+ const warmedKeys=event.tiles.pendingKeys;
+ for(const key of warmedKeys)assert.equal(event.tiles.tiles.get(key).group.visible,false);
+ const built=event.builds();
+ site.publish=true;
+ assert.ok(event.tick(0,7,site),'The event did not commit the preloaded site');
+ assert.equal(event.builds(),built,'Starting the event built more terrain');
+ assert.ok(event.tiles.committedSignature.endsWith(':viewing-site'));
+ assert.deepEqual([...event.tiles.committedKeys],[...warmedKeys]);
+ assert.ok([...warmedKeys].some(key=>key.endsWith(':1')),'The observation site has no detailed center tile');
+ for(const key of warmedKeys)assert.ok(event.tiles.tiles.get(key).group.visible);
+ checkCutawayCoverage(event);
+ const visibleKeys=event.tiles.committedKeys;
+ event.context.pos.copy(site.position);
+ event.tick();
+ assert.equal(event.tiles.committedKeys,visibleKeys,'Background streaming removed the viewing site before its replacement');
+}
 // Optional local benchmark compares the same fully populated ring and motion.
 if(process.env.TERRAIN_BASELINE){
  const {performance}=require('node:perf_hooks');

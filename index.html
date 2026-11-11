@@ -5,13 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#05070c">
 <title>Godman</title>
-<link rel="stylesheet" href="styles/game.css?v=20261110.43">
+<link rel="icon" type="image/svg+xml" sizes="any" href="assets/godman-mark.svg?v=20261111.58">
+<link rel="stylesheet" href="styles/game.css?v=20261111.58">
 <link rel="preload" as="image" href="assets/earth/earth_day_2048.jpg">
 <link rel="preload" as="image" href="assets/earth/earth_specular_2048.jpg">
 <link rel="preload" as="image" href="assets/earth/earth_clouds_1024.png">
 <link rel="preload" as="image" href="assets/earth/earth_elevation_nasa_4096.png">
 </head>
 <body>
+<svg class="iconLibrary" width="0" height="0" aria-hidden="true" focusable="false"><defs><symbol id="icon-orbit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6"/><ellipse cx="12" cy="12" rx="10.5" ry="3.5" transform="rotate(-32 12 12)"/><circle cx="19.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/></symbol><symbol id="icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 11 7-11 7z" fill="currentColor" stroke="none"/></symbol><symbol id="icon-medal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="15" r="5"/><path d="M9 11 5 3h5l2 6 2-6h5l-4 8m-3 2v4"/></symbol><symbol id="icon-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/><circle cx="8" cy="6" r="2" fill="#131922"/><circle cx="16" cy="12" r="2" fill="#131922"/><circle cx="10" cy="18" r="2" fill="#131922"/></symbol><symbol id="icon-guide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h6a2 2 0 0 1 2 2v13a3 3 0 0 0-3-2H4Zm16 0h-6a2 2 0 0 0-2 2v13a3 3 0 0 1 3-2h5Z"/></symbol><symbol id="icon-mouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 4v5"/></symbol><symbol id="icon-graphics" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M9 21h6m-3-4v4m-5-8 4-4 3 3 3-4"/></symbol><symbol id="icon-world" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol><symbol id="icon-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m14 6-6 6 6 6M8 12h12"/></symbol><symbol id="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 6 12 12M18 6 6 18"/></symbol><symbol id="icon-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5v14m6-14v14"/></symbol><symbol id="icon-telescope" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m4 11 12-7 3 5-12 7zm12-7 3-2 3 5-3 2M8 22l4-8 4 8m-4-8v8"/></symbol><symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/></symbol><symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M19 15A8 8 0 0 1 9 5a8 8 0 1 0 10 10Z"/></symbol></defs></svg>
 <div id="hud">
   <div class="planet" id="hudPlanet">Earth</div>
   <div class="stat" id="hudAlt">Altitude: 0 m</div>
@@ -42,70 +44,198 @@
 <a id="milkyWayCredit" href="https://www.eso.org/public/images/eso0932a/" target="_blank" rel="noopener noreferrer" hidden>Milky Way imagery · ESO/S. Brunier</a>
 
 <div id="loader">
+  <img class="loaderMark" src="assets/godman-mark.svg?v=20261111.58" width="50" height="50" alt="">
   <h1>GODMAN</h1>
   <div id="loadOuter"><div id="loadBar"></div></div>
   <div id="loadText">Igniting the stars...</div>
 </div>
 <div id="overlay">
-  <h1>GODMAN</h1>
-  <div id="menuButtons">
-    <button type="button" class="menuBtn" id="btnResume">PLAY</button>
-    <button type="button" class="menuBtn" data-panel="panelAch">ACHIEVEMENTS</button>
-    <button type="button" class="menuBtn" data-panel="panelSet">SETTINGS</button>
-    <button type="button" class="menuBtn" data-panel="panelInfo">INFO</button>
+  <div class="missionMenu">
+    <header class="missionCover">
+      <img class="missionMark" src="assets/godman-mark.svg?v=20261111.58" width="42" height="42" alt="">
+      <h1>Godman</h1>
+    </header>
+    <nav id="menuButtons" aria-label="Game menu">
+      <button type="button" class="gameMenuAction" id="btnResume"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg><span id="resumeLabel">Play</span></button>
+      <button type="button" class="gameMenuAction" data-panel="panelSet"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-sliders"></use></svg><span>Settings</span></button>
+      <button type="button" class="gameMenuAction" id="btnEarthEvents"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-telescope"></use></svg><span>Earth events</span><kbd aria-hidden="true">G</kbd></button>
+      <button type="button" class="gameMenuAction" data-panel="panelAch"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-medal"></use></svg><span>Achievements</span></button>
+      <button type="button" class="gameMenuAction" data-panel="panelInfo"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-guide"></use></svg><span>Flight guide</span></button>
+    </nav>
   </div>
-  <div class="panel" id="panelAch"><h2>Worlds Visited</h2><div id="achList"></div></div>
-  <div class="panel" id="panelSet">
-    <h2>Settings</h2>
-    <div class="setRow">Mouse sensitivity: <input type="range" id="setSens" min="5" max="60" value="24"></div>
-    <div class="setRow"><label><input type="checkbox" id="setInvert"> Invert Y axis</label></div>
-    <div class="setRow">Graphics quality:
-      <select id="setQuality">
-        <option value="0.75">Low</option>
-        <option value="1">Medium</option>
-        <option value="2" selected>High (adaptive)</option>
-        <option value="2.25">Cinematic (adaptive)</option>
-      </select>
+  <section class="panel controlPanel logConsole" id="panelAch" role="dialog" aria-modal="true" aria-labelledby="panelAchTitle">
+    <header class="controlHeader">
+      <div class="consoleHeading"><span class="consoleGlyph"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-medal"></use></svg></span><h2 id="panelAchTitle">Achievements</h2></div>
+      <button type="button" class="controlButton" data-menu-back><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-back"></use></svg>Back</button>
+    </header>
+    <div class="controlBody logBody">
+      <section class="logHero" aria-labelledby="worldsVisitedTitle">
+        <div class="logPlanet" aria-hidden="true"><div class="earthPortrait"></div></div>
+        <div class="logSummary">
+          <h3 id="worldsVisitedTitle">Worlds visited</h3>
+          <div class="logCount"><strong id="achVisited">0</strong><span id="achTotal"></span></div>
+          <progress id="achProgress" aria-labelledby="worldsVisitedTitle"></progress>
+          <p id="achLatest"></p>
+        </div>
+      </section>
+      <div class="logTools">
+        <label class="logSearch"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-world"></use></svg><input type="search" id="achSearch" placeholder="Find a world" autocomplete="off" aria-label="Find a world"></label>
+        <div class="logFilters" role="group" aria-label="Worlds shown">
+          <button type="button" data-ach-filter="all" aria-pressed="true">All</button>
+          <button type="button" data-ach-filter="visited" aria-pressed="false">Visited</button>
+          <button type="button" data-ach-filter="unvisited" aria-pressed="false">Unvisited</button>
+        </div>
+      </div>
+      <div id="achList" class="logGrid"></div>
     </div>
-    <div class="setRow"><label for="setWorldScale">World scale</label>
-      <select id="setWorldScale" aria-describedby="worldScaleHint">
-        <option value="10" selected>1:10 (default)</option>
-        <option value="1">1:1 (real size)</option>
-      </select>
-      <div class="setHint" id="worldScaleHint">Changing scale reloads the world and starts you on Earth.</div>
+    <footer class="controlFooter"><span class="pausedLabel"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-pause"></use></svg>Game paused</span>
+      <button type="button" class="controlButton primaryButton" data-menu-resume><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>Resume game</button>
+    </footer>
+  </section>
+  <section class="panel controlPanel" id="panelSet" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <header class="controlHeader">
+      <div class="consoleHeading"><span class="consoleGlyph"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-sliders"></use></svg></span><h2 id="settingsTitle">Settings</h2></div>
+      <button type="button" class="controlButton" id="settingsBack"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-back"></use></svg>Back</button>
+    </header>
+    <div class="settingsWorkspace">
+      <div class="settingsNav" role="tablist" aria-label="Settings categories">
+        <button type="button" role="tab" id="settingsTabControls" aria-controls="settingsControls" aria-selected="true"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-mouse"></use></svg><span>Controls</span></button>
+        <button type="button" role="tab" id="settingsTabGraphics" aria-controls="settingsGraphics" aria-selected="false" tabindex="-1"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-graphics"></use></svg><span>Graphics</span></button>
+        <button type="button" role="tab" id="settingsTabWorld" aria-controls="settingsWorld" aria-selected="false" tabindex="-1"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-world"></use></svg><span>World</span></button>
+      </div>
+      <div class="controlBody" id="settingsBody">
+      <section role="tabpanel" id="settingsControls" aria-labelledby="settingsTabControls">
+        <h3>Flight controls</h3>
+        <div class="setting"><label for="setSens">Mouse sensitivity</label><div class="settingRange">
+          <input type="range" id="setSens" min="5" max="60" value="24"><output for="setSens" id="sensitivityValue">24</output>
+        </div></div>
+        <div class="setting"><label for="setInvert">Invert vertical look</label><input type="checkbox" id="setInvert" role="switch"></div>
+        <dl class="flightKeys" aria-label="Quick flight controls">
+          <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Move</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>Thrust</dd></div>
+          <div><dt><kbd>Shift</kbd></dt><dd>Brake in flight</dd></div>
+        </dl>
+      </section>
+      <section role="tabpanel" id="settingsGraphics" aria-labelledby="settingsTabGraphics" hidden>
+        <h3>Display &amp; terrain</h3>
+        <div class="setting"><label for="setQuality">Graphics quality</label>
+          <select id="setQuality">
+            <option value="0.75">Low</option><option value="1">Medium</option>
+            <option value="2" selected>High · Adaptive</option><option value="2.25">Cinematic · Adaptive</option>
+          </select>
+        </div>
+        <div class="setting"><label for="setTerrainRange">Terrain distance</label>
+          <select id="setTerrainRange" aria-describedby="terrainRangeHint">
+            <option value="3">Standard</option><option value="5" selected>Far</option><option value="7">Ultra</option>
+          </select>
+          <p class="settingHint" id="terrainRangeHint">Controls how far detailed terrain extends.</p>
+        </div>
+      </section>
+      <section role="tabpanel" id="settingsWorld" aria-labelledby="settingsTabWorld" hidden>
+        <div class="worldPreview">
+          <div><h3>Earth at your scale</h3><p>Choose a smaller world for shorter journeys or explore at real size.</p></div>
+          <div class="earthPortrait" aria-hidden="true"></div>
+        </div>
+        <div class="setting"><label for="setWorldScale">World scale</label>
+          <select id="setWorldScale" aria-describedby="worldScaleHint">
+            <option value="10" selected>1:10 · Default</option><option value="1">1:1 · Real size</option>
+          </select>
+          <p class="settingHint" id="worldScaleHint">Changing scale reloads the game and starts you on Earth.</p>
+        </div>
+      </section>
+      </div>
     </div>
-    <div class="setRow">Terrain distance:
-      <select id="setTerrainRange">
-        <option value="3">Standard — 7 × 7 chunks</option>
-        <option value="5" selected>Far — 11 × 11 chunks</option>
-        <option value="7">Ultra — 15 × 15 chunks</option>
-      </select>
-      <div class="setHint" id="terrainRangeHint">Mountains stream from Earth’s global elevation map and gain detail as you approach.</div>
+    <footer class="controlFooter"><span class="pausedLabel"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-pause"></use></svg>Game paused</span><button type="button" class="controlButton primaryButton" id="settingsResume"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>Resume game</button></footer>
+  </section>
+  <section class="panel controlPanel flightConsole" id="panelInfo" role="dialog" aria-modal="true" aria-labelledby="panelInfoTitle">
+    <header class="controlHeader">
+      <div class="consoleHeading"><span class="consoleGlyph"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-guide"></use></svg></span><h2 id="panelInfoTitle">Flight guide</h2></div>
+      <button type="button" class="controlButton" data-menu-back><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-back"></use></svg>Back</button>
+    </header>
+    <div class="controlBody flightBody">
+      <section class="flightHero">
+        <div>
+          <h3>Repulsor flight</h3>
+          <p>Launch from the ground, aim your thrust, then hold Shift to brake and hover.</p>
+          <div class="flightMeter" aria-hidden="true"></div>
+          <div class="meterLegend"><span>Launch charge</span><span>5 s to full</span></div>
+        </div>
+        <svg class="suitDiagram" viewBox="0 0 174 125" aria-hidden="true" focusable="false">
+          <defs><linearGradient id="suitPanel" x2="1" y2="1"><stop stop-color="#d8bb83"/><stop offset="1" stop-color="#635844"/></linearGradient><linearGradient id="suitJet" x2="0" y2="1"><stop stop-color="#c9fff0"/><stop offset="1" stop-color="#7bd9c9" stop-opacity="0"/></linearGradient></defs>
+          <path d="M13 101h31m86 0h31M87 5v14m0 88v15M18 55h25m88 0h25" stroke="#94b6b8" stroke-opacity=".32" stroke-dasharray="3 4" fill="none"/>
+          <ellipse cx="87" cy="101" rx="46" ry="13" fill="none" stroke="#75bdbb" stroke-opacity=".35"/>
+          <path d="M65 91h14l-7 34Zm30 0h14l-7 34ZM51 63l12 2-12 22Zm72 0-12 2 12 22Z" fill="url(#suitJet)"/>
+          <path d="M74 28h26l10 14 13 15-9 11-12-11 5 16 4 22H94l-7-23-7 23H63l4-22 5-16-12 11-9-11 13-15Z" fill="url(#suitPanel)" stroke="#e9d4a4" stroke-width="1.5"/>
+          <path d="M68 45h38m-26 9h14m-16 9h18m-22 15-4 12m30-12 4 12" fill="none" stroke="#2c2b2a" stroke-width="1.6"/>
+          <rect x="70" y="12" width="34" height="25" rx="10" fill="#c2a779" stroke="#f0ddaf" stroke-width="1.7"/>
+          <path d="M75 23c0-5 24-5 24 0v6c0 4-24 4-24 0Z" fill="#20333b" stroke="#b3e0d6"/>
+          <path d="M77 23h20" stroke="#a9d8cc" stroke-opacity=".65"/>
+          <circle cx="87" cy="48" r="3" fill="#bff5e7"/>
+        </svg>
+      </section>
+      <div class="flightCards">
+        <section class="flightCard">
+          <h3><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>Launch &amp; land</h3>
+          <dl>
+            <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> <kbd>Mouse</kbd></dt><dd>Move and look. Hold Shift on the ground to run.</dd></div>
+            <div><dt><kbd>Space</kbd> <strong>Hold on ground</strong></dt><dd>Build charge through <span id="infoChargeStages">16</span> stages. Release to launch.</dd></div>
+            <div><dt><kbd>Shift</kbd> <strong>Hold in flight</strong></dt><dd>Brake, then hold altitude. Release to coast.</dd></div>
+          </dl>
+        </section>
+        <section class="flightCard">
+          <h3><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-orbit"></use></svg>Fly &amp; explore</h3>
+          <dl>
+            <div><dt><kbd>Space</kbd> <strong>Hold in flight</strong></dt><dd>Thrust toward the crosshair. Look up to climb or down to dive.</dd></div>
+            <div><dt><kbd>F</kbd> <kbd>T</kbd></dt><dd>Find a destination or lock onto the world in your sights.</dd></div>
+            <div><dt><kbd>G</kbd> <kbd>V</kbd></dt><dd>Open Earth events and switch between sky and ground views.</dd></div>
+          </dl>
+        </section>
+      </div>
+      <div class="flightUtilities">
+        <span><kbd>C</kbd> Overview</span><span><kbd>H</kbd> Hide orbit guides</span>
+        <span><kbd>M</kbd> Apollo boost</span><span><kbd>R</kbd> Return to Earth</span><span><kbd>Esc</kbd> Pause</span>
+      </div>
+      <p class="flightNote">World scale <strong id="infoWorldScale">1:10</strong><span>Shoulder light follows your aim after dark.</span></p>
     </div>
-  </div>
-  <div class="panel" id="panelInfo">
-    <h2>Info &amp; Controls</h2>
-    <span class="key">W A S D</span> move · <span class="key">Shift</span> run · <span class="key">Mouse</span> look<br>
-    <span class="key">SPACE</span> on ground: hold to charge, release to drive the arms down and ignite the palms and boots for a vertical launch. Hold again in the air to steer toward the crosshair.<br>
-    The rounded meter has <span id="infoChargeStages">16</span> stages over 5 seconds. Each stage stores more launch energy. Full charge can clear the atmosphere when aimed upward.<br>
-    <span class="key">SPACE</span> in the air: thrust toward the crosshair · aim up to climb, down to descend<br>
-    The shoulder flashlight automatically lights the path ahead in darkness and follows your view.<br>
-    <span class="key">C</span> overview camera — zoom far out, orbit with the mouse, C again to return<br>
-    <span class="key">F</span> find a planet, star, black hole, nebula, or galaxy and smoothly inspect it<br>
-    <span class="key">H</span> hide/show orbit paths and all labels inside the universe (the HUD stays visible)<br>
-    <span class="key">T</span> lock onto the planet you are looking at — the camera tracks it and high-speed approaches brake for landing<br>
-    <span class="key">Shift</span> run on the ground · hold in flight to brake and maintain altitude. Release to coast<br>
-    <span class="key">M</span> instant boost to 39,937.7 km/h — Apollo 10, the fastest humans have ever travelled<br>
-    <span class="key">R</span> respawn on Earth · <span class="key">Esc</span> open this menu<br><br>
-    A real-proportion universe at <span id="infoWorldScale">1:10</span> scale: true planet sizes, true orbital
-    distances, dozens of real planetary systems sourced from NASA data, and
-    a navigable 12-million-sample Milky Way, and 100 streamed 3D galaxies.
-    Deep space supercharges your flight so the cosmos stays reachable.
-    And 26,670 light-years away, Sagittarius A* — a supermassive black hole —
-    waits. Its live relativistic renderer bends the real scene through the
-    surrounding accretion flow. The event horizon is one-way.
-  </div>
-  <button type="button" class="menuBtn" id="btnBack" style="display:none">BACK</button>
+    <footer class="controlFooter"><span class="pausedLabel"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-pause"></use></svg>Game paused</span>
+      <button type="button" class="controlButton primaryButton" data-menu-resume><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>Resume game</button>
+    </footer>
+  </section>
+</div>
+
+<div id="earthEvents" hidden>
+  <section class="controlPanel eventsConsole" role="dialog" aria-modal="true" aria-labelledby="eventsTitle">
+    <header class="controlHeader">
+      <div class="consoleHeading"><span class="consoleGlyph"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-telescope"></use></svg></span><h2 id="eventsTitle">Earth events</h2></div>
+      <button type="button" class="controlButton" id="eventsClose"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>Close</button>
+    </header>
+    <div class="eventWorkspace">
+      <div class="controlBody eventCatalog" id="eventsList" aria-label="Earth events catalog"></div>
+      <div class="eventPreview" id="eventPreview">
+        <div class="eventScene" id="eventScene" data-event="total-solar" aria-hidden="true">
+          <i class="skyGuide"></i><i class="skyDisc"></i><i class="skyShadow"></i><i class="skyHorizon"></i>
+        </div>
+        <div class="eventBrief" aria-live="polite">
+          <p class="eventCategory" id="eventPreviewGroup"></p>
+          <h3 id="eventPreviewTitle"></h3>
+          <p id="eventPreviewDetail"></p>
+        </div>
+        <p class="eventViewingHint">The sky keeps moving at the game’s usual speed. <kbd>V</kbd> switches between the sky and the ground.</p>
+      </div>
+    </div>
+    <footer class="controlFooter">
+      <span id="eventSiteStatus" class="siteStatus" role="status"></span>
+      <div class="eventActions">
+        <button type="button" class="controlButton" id="eventsRestore" hidden>Restore normal sky</button>
+        <button type="button" class="controlButton primaryButton" id="eventsLaunch"><svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-telescope"></use></svg><span id="eventsLaunchLabel">Observe</span></button>
+      </div>
+    </footer>
+  </section>
+</div>
+<div id="earthEventStatus" hidden>
+  <span id="earthEventName" aria-live="polite"></span><span id="earthEventReadout" aria-hidden="true"></span>
+  <span class="eventViewShortcut"><kbd>V</kbd> <span id="eventViewLabel">Ground view</span></span>
+  <kbd aria-label="G for Earth events">G</kbd>
 </div>
 
 <script src="vendor/three.r128.min.js" defer></script>
@@ -114,7 +244,7 @@
 <script src="src/data/nasa-exoplanets.js?v=20260901.4" defer></script>
 <script src="src/runtime/adaptive-quality.js?v=20261110.41" defer></script>
 <script src="src/runtime/atmosphere.js?v=20261110.45" defer></script>
-<script src="src/runtime/physical-lighting.js?v=20261109.40" defer></script>
+<script src="src/runtime/physical-lighting.js?v=20261111.58" defer></script>
 <script src="src/runtime/planetary-sky.js?v=20261110.44" defer></script>
 <script src="src/runtime/deep-sky.js?v=20261110.43.3" defer></script>
 <script src="src/runtime/launch-sequence.js?v=20261104.31.2" defer></script>
@@ -128,7 +258,8 @@
 <script src="src/runtime/terrain-surface.js?v=20261110.47.1" defer></script>
 <script src="src/runtime/shoulder-flashlight.js?v=20261103.10" defer></script>
 <script src="src/runtime/earth-ground.js?v=20261110.46.1" defer></script>
-<script src="src/runtime/earth-hydrography.js?v=20261110.47.1" defer></script>
-<script src="src/game.js?v=20261110.47.1" defer></script>
+<script src="src/runtime/earth-hydrography.js?v=20261111.58" defer></script>
+<script src="src/runtime/earth-events.js?v=20261111.58" defer></script>
+<script src="src/game.js?v=20261111.58" defer></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 (function(root){
   'use strict';
-  const metresPerDegree=111195, radians=Math.PI/180, lakeBank=1800;
+  const metresPerDegree=111195, radians=Math.PI/180, lakeBank=4200, riverBank=3600;
   const columns=720, rows=360, cellSize=.5, riverPathStride=65536;
   const longitudeNear=(longitude,reference)=>longitude+360*Math.round((reference-longitude)/360);
   const xCell=lon=>Math.floor((lon+180)/cellSize);
@@ -8,6 +8,10 @@
   const key=(x,y)=>y*columns+((x%columns+columns)%columns);
   const longitudeScale=latitude=>Math.max(.03,Math.cos(latitude*radians));
   const clamp01=value=>Math.max(0,Math.min(1,value));
+  function smoothstep(value){
+    const t=clamp01(value);
+    return t*t*(3-2*t);
+  }
 
   function addToCells(cells,west,east,south,north,value){
     for(let y=yCell(south);y<=yCell(north);y++){
@@ -102,9 +106,9 @@
     }
 
     addRiver(width,points){
-      const bank=Math.max(65,width*.7), id=this.paths.length;
-      this.paths.push({width,bank,points});
-      const latPad=(width+bank)/metresPerDegree;
+      const id=this.paths.length;
+      this.paths.push({width,points});
+      const latPad=(width+riverBank)/metresPerDegree;
       for(let i=3;i<points.length;i+=3){
         const x=points[i-3],y=points[i-2],nextX=points[i],nextY=points[i+1];
         const lonPad=latPad/longitudeScale(Math.max(Math.abs(y),Math.abs(nextY)));
@@ -115,6 +119,7 @@
 
     sample(longitude,latitude,out){
       out.kind=0;
+      out.lakeDistance=out.riverDistance=Infinity;
       const row=yCell(latitude),id=key(xCell(longitude),row);
       const lakes=this.lakes.get(id),rivers=this.rivers.get(id);
       if(!lakes&&!rivers)return out;
@@ -140,9 +145,12 @@
         bestBank=bank;
         out.kind=1;out.level=lake.level;out.bank=bank;out.transition=lakeBank;
       }
-      if(bestBank<=0)return out;
+      // Below this shelf the lake bed is already deeper than any river.
+      if(bestBank<-420)return out;
+      const lakeDistance=bestBank,lakeLevel=out.level;
+      let riverDistance=Infinity,riverLevel=0;
       if(rivers)for(const segment of rivers){
-        const {width,bank:transition,points}=this.paths[segment%riverPathStride];
+        const {width,points}=this.paths[segment%riverPathStride];
         const i=Math.floor(segment/riverPathStride);
         const lon=longitudeNear(longitude,points[i-3]);
         const x=(points[i-3]-lon)*scale,y=points[i-2]-latitude;
@@ -150,12 +158,47 @@
         const length=dx*dx+dy*dy;
         const t=length?clamp01(-(x*dx+y*dy)/length):0;
         const bank=Math.hypot(x+dx*t,y+dy*t)*metresPerDegree-width;
-        if(bank>=transition||bank>=bestBank)continue;
-        bestBank=bank;
-        out.kind=2;out.bank=bank;out.transition=transition;
-        out.level=points[i-1]+(points[i+2]-points[i-1])*t;
+        if(bank>=riverBank||bank>=riverDistance)continue;
+        riverDistance=bank;
+        riverLevel=points[i-1]+(points[i+2]-points[i-1])*t;
       }
+      if(riverDistance<riverBank){
+        // Join the lake at its surface even when the coarse DEM recorded the
+        // river on a nearby hillside. Match levels before changing features.
+        if(lakeDistance<lakeBank)riverLevel=lakeLevel+(riverLevel-lakeLevel)*smoothstep(lakeDistance/lakeBank);
+        if(lakeDistance>0&&riverDistance<lakeDistance){
+          out.kind=2;out.bank=riverDistance;out.transition=riverBank;out.level=riverLevel;
+        }
+        out.riverDistance=riverDistance;
+        out.riverLevel=riverLevel;
+      }
+      out.lakeDistance=lakeDistance;
+      out.lakeLevel=lakeLevel;
       return out;
+    }
+
+    static bankElevation(inland,dryElevation,waterLevel,metresPerUnit,riverLevel=waterLevel){
+      const {kind,bank,transition,lakeDistance,riverDistance,lakeLevel}=inland;
+      if(bank<=0){
+        const lakeBankDistance=kind===1?bank:Math.min(0,lakeDistance??0);
+        const riverBankDistance=kind===2?bank:Math.min(0,riverDistance??0);
+        const lakeDepth=65*-Math.expm1(lakeBankDistance*.045/65);
+        const riverDepth=12*-Math.expm1(riverBankDistance*.075/12);
+        return waterLevel-Math.max(lakeDepth,riverDepth)/metresPerUnit;
+      }
+      // Keep a gently sloped shelf near the shore, then rejoin the terrain.
+      // Blend overlapping shelves so a change of nearest feature adds no wall.
+      const shelf=(distance,limit,grade,level)=>level+limit*-Math.expm1(-distance*grade/limit)/metresPerUnit;
+      if(lakeDistance<lakeBank&&riverDistance<riverBank){
+        const lakeBlend=smoothstep(lakeDistance/lakeBank),riverBlend=smoothstep(riverDistance/riverBank);
+        const lakeShelf=shelf(lakeDistance,13,.022,lakeLevel/metresPerUnit);
+        const riverShelf=shelf(riverDistance,19,.05,riverLevel);
+        const lakeWeight=(1-lakeBlend)*riverBlend,riverWeight=(1-riverBlend)*lakeBlend;
+        const mixed=(lakeShelf*lakeWeight+riverShelf*riverWeight)/(lakeWeight+riverWeight);
+        return mixed+(dryElevation-mixed)*Math.min(lakeBlend,riverBlend);
+      }
+      const elevation=kind===1?shelf(bank,13,.022,waterLevel):shelf(bank,19,.05,waterLevel);
+      return elevation+(dryElevation-elevation)*smoothstep(bank/transition);
     }
 
     static async load(url){

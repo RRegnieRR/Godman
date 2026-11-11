@@ -97,6 +97,7 @@
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
+    redrawPausedScene=true;
     if (composer) composer.setSize(innerWidth, innerHeight);
     if (stylePass) stylePass.uniforms.resolution.value.set(innerWidth, innerHeight);
   });
@@ -618,6 +619,28 @@
     temperature:5772,luminosity:1,
     lightColor: 0xfff2d0, lightRange: 9e11, glowInner: 'rgba(255,230,150,1)', glowMid: 'rgba(255,170,60,0.4)' });
 
+  // A compact corona sits at the Sun's actual distance, behind the Moon.
+  const coronaMap=canvasTex((ctx,width,height)=>{
+    const pixels=ctx.createImageData(width,height),data=pixels.data;
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const dx=(x+.5)/width*2-1,dy=(y+.5)/height*2-1;
+      const radius=Math.hypot(dx,dy),angle=Math.atan2(dy,dx);
+      const streamer=.58+.24*Math.cos(3*angle+.2)+.13*Math.cos(7*angle-1.3)+.05*Math.cos(23*angle);
+      const heightAboveLimb=Math.max(0,radius-.30);
+      const opacity=(.85*Math.exp(-heightAboveLimb*18)+.35*streamer*Math.exp(-heightAboveLimb*5))*
+        (1-THREE.MathUtils.smoothstep(radius,.70,1));
+      const index=(y*width+x)*4;
+      data[index]=232;data[index+1]=239;data[index+2]=255;
+      data[index+3]=Math.round(255*Math.min(1,opacity));
+    }
+    ctx.putImageData(pixels,0,0);
+  },256,256);
+  const solarCorona=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:coronaMap,transparent:true,depthWrite:false,fog:false,toneMapped:false,blending:THREE.AdditiveBlending
+  }));
+  solarCorona.scale.set(sun.r*6.6,sun.r*6.6,1);
+  solarCorona.visible=false;
+  track(solarCorona,sun.center);
   addOrbitLine(sun.center, 0.387 * AU, 3.4);
   const mercury = addPlanet({ name: 'Mercury', r: 2.44e5, g: 3.7, center: orbitPos(sun.center, 0.387 * AU, 25, 3.4), tex: cratered('#8d7f72', '#5f554b', '#b0a293'), bumpScale: 0.6, props: 'rocky', propColor: 0x8d7f72 });
   addOrbitLine(sun.center, 0.723 * AU, 3.39);
@@ -628,6 +651,44 @@
     atmosphere: 0x6db3ff, clouds: cloudTex, tilt: 0.41, specular: 0x335577, shininess: 16, bumpScale: 0.3,
     hasOcean: true, detail: true, landFn: landGreen, props: 'forest', propColor: 0x2e7d32, trunkColor: 0x6a4a2a, rockColor: 0x8a8d92 });
   const moon = addPlanet({ name: 'Moon', r: 1.737e5, g: 1.62, center: earth.center.clone().add(V3(2.5e7, 1.4e7, 2.5e7).multiplyScalar(worldFactor)), tex: cratered('#9a9a9a', '#6e6e6e', '#c2c2c2'), bumpScale: 0.7, soiMult: 5, props: 'rocky', propColor: 0x9a9a9a });
+  const lunarSunDirection={value:new THREE.Vector3()},lunarDiskWeight={value:0},lunarEclipse={value:1};
+  const lunarTransmission={value:1};
+  const lunarEarthOffset={value:new THREE.Vector3()},lunarSolarAngle={value:.00465};
+  moon.mesh.material.onBeforeCompile=shader=>{
+    shader.uniforms.lunarSunDirection=lunarSunDirection;
+    shader.uniforms.lunarDiskWeight=lunarDiskWeight;
+    shader.uniforms.lunarTransmission=lunarTransmission;
+    shader.uniforms.lunarEarthOffset=lunarEarthOffset;
+    shader.uniforms.lunarSolarAngle=lunarSolarAngle;
+    shader.vertexShader=shader.vertexShader
+      .replace('#include <common>',`#include <common>
+        varying vec3 vLunarOffset;`)
+      .replace('#include <begin_vertex>',`#include <begin_vertex>
+        vLunarOffset=mat3(modelMatrix)*transformed/${moon.r.toFixed(1)};`);
+    shader.fragmentShader=shader.fragmentShader
+      .replace('#include <common>',`#include <common>
+        varying vec3 vLunarOffset;
+        uniform vec3 lunarSunDirection,lunarEarthOffset;
+        uniform float lunarDiskWeight,lunarTransmission,lunarSolarAngle;`)
+      .replace('gl_FragColor = vec4( outgoingLight, diffuseColor.a );',`
+        float lunarIncidence=max(0.,dot(normal,normalize(mat3(viewMatrix)*lunarSunDirection)));
+        vec3 earthRay=lunarEarthOffset-vLunarOffset;
+        vec3 earthDir=normalize(earthRay);
+        float earthAngle=asin(clamp(${(earth.r/moon.r).toFixed(8)}/length(earthRay),0.,1.));
+        float separation=atan(length(cross(earthDir,lunarSunDirection)),dot(earthDir,lunarSunDirection));
+        float solarLight=smoothstep(earthAngle-lunarSolarAngle,earthAngle+lunarSolarAngle,separation);
+        float umbra=1.-smoothstep(.01,.28,solarLight);
+        vec3 copper=vec3(.45,.069,.016)*umbra;
+        vec3 lunarRadiance=diffuseColor.rgb*(vec3(.009)+(vec3(.95*solarLight)+copper)*sqrt(lunarIncidence));
+        gl_FragColor = vec4(mix(outgoingLight,lunarRadiance,lunarDiskWeight),diffuseColor.a);`)
+      .replace('#include <fog_fragment>',`
+        #ifdef USE_FOG
+          vec3 lunarUnfogged=gl_FragColor.rgb;
+          #include <fog_fragment>
+          gl_FragColor.rgb=mix(gl_FragColor.rgb,lunarUnfogged,lunarDiskWeight*lunarTransmission);
+        #endif`);
+  };
+  moon.mesh.material.customProgramCacheKey=()=> 'moon-earth-shadow';
   addOrbitLine(sun.center, 1.52 * AU, 1.85);
   const mars = addPlanet({ name: 'Mars', r: 3.39e5, g: 3.71, center: orbitPos(sun.center, 1.52 * AU, 305, 1.85), tex: rocky('#b34a26', ['#8c2f12', '#d2693f', '#7a3a20'], 46, '#e8d9c8', 28), atmosphere: 0xd8a080, tilt: 0.44, bumpScale: 0.5, props: 'rocky', propColor: 0x9c4a26 });
   addOrbitLine(sun.center, 5.2 * AU, 1.3);
@@ -2041,10 +2102,7 @@
       const separation=Math.acos(Math.max(-1,Math.min(1,eclipseBodyVector.dot(eclipseStarVector))));
       const bodyAngular=Math.asin(Math.min(.9999,body.r/bodyDistance));
       if(separation>=starAngular+bodyAngular)continue;
-      let cover;
-      if(bodyAngular>=starAngular&&separation<=bodyAngular-starAngular)cover=1;
-      else cover=Math.max(0,Math.min(1,(starAngular+bodyAngular-separation)/(starAngular*2)));
-      visibility*=1-cover;
+      visibility*=1-window.GodmanEarthEvents.diskCoverage(starAngular,bodyAngular,separation);
       if(visibility<.002)return 0;
     }
     return visibility;
@@ -2948,6 +3006,14 @@
     ambient:ambient,sky:skyLight,key:characterKey,headlamp:headlamp
   });
 
+  const lightingUp=new THREE.Vector3(),lightingSun=new THREE.Vector3();
+  const lightingGroundDirection=new THREE.Vector3(),lightingPlanetInverse=new THREE.Quaternion();
+  const lightingGroundAlbedo=new THREE.Color();
+  const moonlight=new THREE.DirectionalLight(0xd7e2f5,0);
+  moonlight.visible=false;
+  scene.add(moonlight);
+  const observerToMoon=new THREE.Vector3(),moonToEarth=new THREE.Vector3();
+
   const PLAYER_FEET = 0.3;
   // Ground speed matches the retargeted suit's stride. Shared with the studio
   // so the preview and game do not show different foot-contact velocities.
@@ -3127,10 +3193,10 @@
   }
 
 
-  function spawnOn(p) {
+  function spawnOn(p,viewingNormal=null,viewingDirection=null) {
     terrainCameraOffset=0;
     groundPlanet = p;
-    const n = findSpawnNormal(p);
+    const n = viewingNormal||findSpawnNormal(p);
     const srL = surfaceR(p, n);
     pos.copy(p.center).addScaledVector(n, (srL < 0 ? p.r : srL) + PLAYER_FEET);
     prevPos.copy(pos);
@@ -3141,7 +3207,8 @@
     up.copy(n); smoothUp.copy(n);
     earthInWater=p===earth&&earthWaterAtWorld(n);
     swimBlend=earthInWater?1:0;landingSlide.set(0,0,0);landingAge=99;landingStrength=0;landingPose.roll=false;
-    if(p===earth&&earthSpawnFacing)fwdRef.copy(earthSpawnFacing).addScaledVector(n,-earthSpawnFacing.dot(n)).normalize();
+    if(viewingDirection)fwdRef.copy(viewingDirection).addScaledVector(n,-viewingDirection.dot(n)).normalize();
+    else if(p===earth&&earthSpawnFacing)fwdRef.copy(earthSpawnFacing).addScaledVector(n,-earthSpawnFacing.dot(n)).normalize();
     else fwdRef.set(0, 0, -1).addScaledVector(n, -n.dot(fwdRef)).normalize();
     if (fwdRef.lengthSq() < 1e-6) fwdRef.set(1, 0, 0);
     fwdRef.normalize();
@@ -3154,6 +3221,16 @@
 
   // ---------- Input ----------
   const keys = {};
+  let earthEvent=null,earthEventsOpen=false,eventsReturnToGame=false,earthEventAim=false,restoreMoonOrbit=false;
+  const earthEventAimPoint=new THREE.Vector3();
+  let eventMoonOrbit=null;
+  let eventViewingSite=null;
+  let ownsPointerLock=false,redrawPausedScene=false;
+  function clearGameplayInput(){
+    for(const code of Object.keys(keys))keys[code]=false;
+    charging=false;charge=0;
+    document.getElementById('chargeWrap').style.display='none';
+  }
   function setUniverseAnnotationsHidden(hidden) {
     universeAnnotationsHidden = !!hidden;
     for (const line of orbitGuides) line.visible = !universeAnnotationsHidden;
@@ -3165,6 +3242,14 @@
       : 'Universe labels and orbit paths visible');
   }
   addEventListener('keydown', e => {
+    if(!loaderHidden)return;
+    if(earthEventsOpen){
+      if(e.code==='Escape'||(e.code==='KeyG'&&!e.repeat)){
+        closeEarthEvents();
+        e.preventDefault();
+      }else trapPanelFocus(e,earthEventsPanel);
+      return;
+    }
     if (finderOpen) {
       if (e.code === 'Escape' || (e.code === 'KeyF' && e.target !== document.getElementById('finderSearch'))) {
         closeFinder(false);
@@ -3172,13 +3257,41 @@
       }
       return;
     }
+    if(gamePaused()){
+      if(menuPanel){
+        if(e.code==='Escape'){
+          returnToMenu();
+          e.preventDefault();
+        }else trapPanelFocus(e,menuPanel);
+      }else if(e.code==='KeyG'&&!e.repeat){
+        openEarthEvents();
+        e.preventDefault();
+      }
+      return;
+    }
+    if(e.code==='Escape'){
+      if(!document.pointerLockElement)showPauseMenu();
+      return;
+    }
+    if(e.code==='KeyG'&&!e.repeat){
+      openEarthEvents();
+      e.preventDefault();
+      return;
+    }
+    if(e.code==='KeyV'&&!e.repeat&&earthEvent){
+      if(overview)toggleOverview();
+      earthEventAim=!earthEventAim;
+      e.preventDefault();
+      return;
+    }
+    if(['KeyW','KeyA','KeyS','KeyD','KeyC','KeyR','KeyT','Space'].includes(e.code))earthEventAim=false;
     if (e.code === 'KeyF' && !e.repeat) {
       openFinder();
       e.preventDefault();
       return;
     }
     if (e.code === 'Space' && !e.repeat && grounded&&!flightDynamics.launchQueued) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
-    if (e.code === 'KeyR') spawnOn(homePlanet());
+    if (e.code === 'KeyR') { clearEarthEvent(); spawnOn(homePlanet()); }
     if (e.code === 'KeyT' && !e.repeat) toggleTarget();
     if (e.code === 'KeyC' && !e.repeat) toggleOverview();
     if (e.code === 'KeyH' && !e.repeat) setUniverseAnnotationsHidden(!universeAnnotationsHidden);
@@ -3188,16 +3301,15 @@
   });
   addEventListener('keyup', e => {
     keys[e.code] = false;
-    if (e.code === 'Space' && charging) {
+    if (!gamePaused() && e.code === 'Space' && charging) {
       charge=Math.min(1,(performance.now()-chargeStartedAt)/(CHARGE_TIME*1000));
       if (grounded) doJump();
       charging = false; charge = 0;
     }
   });
   addEventListener('wheel', e => {
-    // While the destination finder is open, the wheel belongs to its list.
-    // Returning here prevents both third-person and overview camera zoom.
-    if (finderOpen) return;
+    if (gamePaused()) return;
+    earthEventAim=false;
     if (overview) {
       // Exponential wheel zoom stays consistent at planetary and human scales.
       // The four-metre minimum lets the overview travel right back to the player.
@@ -3343,40 +3455,301 @@
   // ---------- Menu ----------
   const overlay = document.getElementById('overlay');
   const menuButtons = document.getElementById('menuButtons');
-  const btnBack = document.getElementById('btnBack');
+  let menuPanel=null;
   const finderEl = document.getElementById('finder');
   const finderSearch = document.getElementById('finderSearch');
   const finderResults = document.getElementById('finderResults');
   const panels = { panelAch: document.getElementById('panelAch'), panelSet: document.getElementById('panelSet'), panelInfo: document.getElementById('panelInfo') };
-  function showMenuHome() {
-    menuButtons.style.display = 'block';
-    btnBack.style.display = 'none';
-    for (const k in panels) panels[k].style.display = 'none';
+  const earthEventsPanel=document.getElementById('earthEvents');
+  const earthEventsList=document.getElementById('eventsList');
+  const earthEventsButton=document.getElementById('btnEarthEvents');
+  const earthEventStatus=document.getElementById('earthEventStatus');
+  const earthEventName=document.getElementById('earthEventName');
+  const earthEventReadout=document.getElementById('earthEventReadout');
+  const crosshair=document.getElementById('crosshair');
+  const eventsClose=document.getElementById('eventsClose');
+  const eventsRestore=document.getElementById('eventsRestore');
+  const eventsLaunch=document.getElementById('eventsLaunch');
+  const eventsLaunchLabel=document.getElementById('eventsLaunchLabel');
+  const eventSiteStatus=document.getElementById('eventSiteStatus');
+  const eventViewLabel=document.getElementById('eventViewLabel');
+  const eventScene=document.getElementById('eventScene');
+  const eventPreviewGroup=document.getElementById('eventPreviewGroup');
+  const eventPreviewTitle=document.getElementById('eventPreviewTitle');
+  const eventPreviewDetail=document.getElementById('eventPreviewDetail');
+  const eventOptions=window.GodmanEarthEvents.events;
+  const eventButtons=new Map();
+  let previewedEvent=eventOptions[0];
+  const settingsBody=document.getElementById('settingsBody');
+  const settingsTabs=[...panels.panelSet.querySelectorAll('[role=tab]')];
+
+  function gamePaused(){return overlay.style.display!=='none'||finderOpen||earthEventsOpen;}
+  function canUseEarthEvents(){
+    return !earth.destroyed&&!moon.destroyed&&(grounded?groundPlanet===earth:
+      Math.abs(pos.distanceTo(earth.center)-earth.r)<worldMeters(120000));
   }
-  document.getElementById('btnResume').addEventListener('click', () => renderer.domElement.requestPointerLock());
-  for (const btn of menuButtons.querySelectorAll('[data-panel]')) {
-    btn.addEventListener('click', () => {
-      menuButtons.style.display = 'none';
-      btnBack.style.display = 'block';
-      panels[btn.dataset.panel].style.display = 'block';
-      if (btn.dataset.panel === 'panelAch') renderAchievements();
+  function trapPanelFocus(event,panel){
+    if(event.code!=='Tab')return;
+    const items=[...panel.querySelectorAll('button:not([disabled]):not([hidden]),input,select')]
+      .filter(element=>element.tabIndex>=0&&element.getClientRects().length>0);
+    const next=event.shiftKey?items.at(-1):items[0];
+    const edge=event.shiftKey?items[0]:items.at(-1);
+    if(next&&(document.activeElement===edge||!panel.contains(document.activeElement))){
+      event.preventDefault();
+      next.focus();
+    }
+  }
+  function activateSettingsTab(active){
+    for(const tab of settingsTabs){
+      const selected=tab===active;
+      tab.setAttribute('aria-selected',String(selected));
+      tab.tabIndex=selected?0:-1;
+      document.getElementById(tab.getAttribute('aria-controls')).hidden=!selected;
+    }
+    settingsBody.scrollTop=0;
+  }
+  for(const tab of settingsTabs){
+    tab.addEventListener('click',()=>activateSettingsTab(tab));
+    tab.addEventListener('keydown',event=>{
+      const index=settingsTabs.indexOf(tab);
+      const direction={ArrowLeft:-1,ArrowUp:-1,ArrowRight:1,ArrowDown:1}[event.key];
+      if(direction===undefined&&event.key!=='Home'&&event.key!=='End')return;
+      event.preventDefault();
+      const next=event.key==='Home'?0:event.key==='End'?settingsTabs.length-1:
+        (index+direction+settingsTabs.length)%settingsTabs.length;
+      activateSettingsTab(settingsTabs[next]);
+      settingsTabs[next].focus();
     });
   }
-  btnBack.addEventListener('click', showMenuHome);
-  finderSearch.addEventListener('input', () => renderFinder(finderSearch.value));
-  finderEl.addEventListener('wheel', e => {
-    finderResults.scrollTop += e.deltaY;
-    e.preventDefault();
-  }, { passive: false });
-  document.addEventListener('pointerlockchange', () => {
-    overlay.style.display = document.pointerLockElement || finderOpen ? 'none' : 'flex';
-    if (!document.pointerLockElement) {
-      showMenuHome();
-      for (const k2 in keys) keys[k2] = false;
-      charging = false; charge = 0;
-    }
-    if (document.pointerLockElement) startMusic();
+  function showMenuHome(){
+    menuPanel=null;
+    overlay.classList.remove('settingsOpen','consoleOpen');
+    for(const panel of Object.values(panels))panel.style.display='';
+    earthEventsButton.hidden=!canUseEarthEvents();
+  }
+  function showPauseMenu(){
+    clearGameplayInput();
+    overlay.style.display='flex';
+    showMenuHome();
+  }
+  const resumeLabel=document.getElementById('resumeLabel');
+  function resumeGame(){
+    resumeLabel.textContent='Resume';
+    showMenuHome();
+    overlay.style.display='none';
+    // Keyboard play remains available when an embedded browser denies lock.
+    try{renderer.domElement.requestPointerLock()?.catch(()=>{});}catch(error){}
+  }
+  document.getElementById('btnResume').addEventListener('click',resumeGame);
+  function returnToMenu(){
+    const panel=menuPanel?.id;
+    showMenuHome();
+    if(panel)menuButtons.querySelector('[data-panel="'+panel+'"]').focus();
+  }
+  document.getElementById('settingsBack').addEventListener('click',returnToMenu);
+  document.getElementById('settingsResume').addEventListener('click',resumeGame);
+  for(const button of overlay.querySelectorAll('[data-menu-back]'))button.addEventListener('click',returnToMenu);
+  for(const button of overlay.querySelectorAll('[data-menu-resume]'))button.addEventListener('click',resumeGame);
+  earthEventsButton.addEventListener('click',openEarthEvents);
+  eventsClose.addEventListener('click',()=>closeEarthEvents());
+  eventsLaunch.addEventListener('click',()=>selectEarthEvent(previewedEvent));
+  eventsRestore.addEventListener('click',()=>{
+    clearEarthEvent();
+    closeEarthEvents(true);
   });
+  for(const btn of menuButtons.querySelectorAll('[data-panel]')){
+    btn.addEventListener('click',()=>{
+      menuPanel=panels[btn.dataset.panel];
+      overlay.classList.add('consoleOpen');
+      if(btn.dataset.panel==='panelSet'){
+        overlay.classList.add('settingsOpen');
+        settingsBody.scrollTop=0;
+        settingsTabs.find(tab=>tab.tabIndex===0).focus();
+        return;
+      }
+      menuPanel.style.display='flex';
+      menuPanel.querySelector('.controlBody').scrollTop=0;
+      if(btn.dataset.panel==='panelAch')renderAchievements();
+      menuPanel.querySelector('[data-menu-back]').focus();
+    });
+  }
+  finderSearch.addEventListener('input',()=>renderFinder(finderSearch.value));
+  finderEl.addEventListener('wheel',e=>{
+    finderResults.scrollTop+=e.deltaY;
+    e.preventDefault();
+  },{passive:false});
+  document.addEventListener('pointerlockchange',()=>{
+    const locked=document.pointerLockElement===renderer.domElement;
+    const released=ownsPointerLock&&!locked;
+    ownsPointerLock=locked;
+    if(locked&&!earthEventsOpen&&!finderOpen){
+      overlay.style.display='none';
+      startMusic();
+    }else if(released){
+      clearGameplayInput();
+      if(!earthEventsOpen&&!finderOpen)showPauseMenu();
+    }
+  });
+
+  function openEarthEvents(){
+    if(!canUseEarthEvents()){
+      toast('Earth events are available near Earth');
+      return;
+    }
+    eventsReturnToGame=!gamePaused();
+    earthEventsOpen=true;
+    clearGameplayInput();
+    earthEventsPanel.hidden=false;
+    overlay.style.display='none';
+    eventsRestore.hidden=!earthEvent;
+    earthEventsList.scrollTop=0;
+    previewEarthEvent(earthEvent||previewedEvent);
+    for(const [id,button] of eventButtons)button.setAttribute('aria-current',String(id===earthEvent?.id));
+    if(document.pointerLockElement)document.exitPointerLock();
+    eventButtons.get(previewedEvent.id).focus();
+  }
+
+  function closeEarthEvents(resume=eventsReturnToGame){
+    earthEventsOpen=false;
+    earthEventsPanel.hidden=true;
+    eventViewingSite=null;
+    if(resume)resumeGame();
+    else{
+      showPauseMenu();
+      earthEventsButton.focus();
+    }
+  }
+
+  function clearEarthEvent(){
+    if(!earthEvent)return;
+    earthEvent=null;
+    earthEventAim=false;
+    restoreMoonOrbit=restoreMoonOrbit||!!eventMoonOrbit;
+    eventMoonOrbit=null;
+    earthEventStatus.hidden=true;
+  }
+
+  function prepareEarthEventTerrain(){
+    const site=eventViewingSite;
+    if(!site||site.ready||performance.now()<site.startAfter)return;
+    if(!earthElevation.ready||earthHydrographyLoading)return;
+    if(!site.position){
+      const inverse=earth.mesh.quaternion.clone().invert();
+      const local=new THREE.Vector3();
+      site.normal=window.GodmanEarthEvents.viewingNormal(THREE,earth,sun,site.event,normal=>{
+        local.copy(normal).applyQuaternion(inverse);
+        return earthWaterLevelLocal(local)===null&&sampleEarthElevationRaster(local)<worldMeters(1600);
+      });
+      site.position=earth.center.clone().addScaledVector(site.normal,surfaceR(earth,site.normal)+PLAYER_FEET);
+    }
+    if(updateEarthSurfaceTiles(0,7,site)){
+      site.ready=true;
+      eventsLaunch.disabled=false;
+      eventsLaunchLabel.textContent='Observe';
+      eventSiteStatus.textContent='Viewing site ready';
+      eventSiteStatus.dataset.ready='true';
+    }
+  }
+
+  function selectEarthEvent(event){
+    const site=eventViewingSite;
+    if(!canUseEarthEvents()||!site?.ready||site.event!==event)return;
+    site.publish=true;
+    // Commit the prepared ring before spawn reads the landing surface.
+    if(!updateEarthSurfaceTiles(0,7,site)){
+      site.publish=false;
+      site.ready=false;
+      eventsLaunch.disabled=true;
+      eventsLaunchLabel.textContent='Preparing site';
+      eventSiteStatus.textContent='Preparing terrain…';
+      eventSiteStatus.dataset.ready='false';
+      return;
+    }
+    const model=window.GodmanEarthEvents,viewingNormal=site.normal;
+    clearEarthEvent();
+    earthEvent=event;
+    if(overview)toggleOverview();
+    const subject=event.lunarOffset!==undefined||event.crescentOffset!==undefined?moon:sun;
+    const facing=subject===sun?sun.center.clone().sub(earth.center):earth.center.clone().sub(sun.center);
+    if(event.crescentOffset!==undefined)facing.negate();
+    spawnOn(earth,viewingNormal,facing);
+    airCarry=earth;
+    if(event.range){
+      const previousDirection=moon.center.clone().sub(earth.center).normalize();
+      model.moonPosition(THREE,event,pos,earth,sun,metersPerUnit,moon.center);
+      const offset=moon.center.clone().sub(earth.center);
+      moon.mesh.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(previousDirection,offset.clone().normalize()));
+      eventMoonOrbit=model.observationOrbit(THREE,moon.orbit,offset);
+      moon.prevCenter.copy(moon.center);
+      moon.velNow.set(0,0,0);
+      if(subject===moon){
+        fwdRef.copy(moon.center).sub(pos).projectOnPlane(viewingNormal).normalize();
+        lastFacing.copy(fwdRef);
+      }
+      restoreMoonOrbit=false;
+    }
+    earthEventAim=true;
+    crosshair.style.display='none';
+    camera.fov=event.id==='sunset'?60:8;
+    camera.updateProjectionMatrix();
+    earthEventName.textContent=event.title;
+    earthEventReadout.textContent='';
+    earthEventStatus.hidden=false;
+    closeEarthEvents(true);
+  }
+
+  function previewEarthEvent(event){
+    previewedEvent=event;
+    eventScene.dataset.event=event.id;
+    eventPreviewGroup.textContent=event.group;
+    eventPreviewTitle.textContent=event.title;
+    eventPreviewDetail.textContent=event.detail;
+    for(const [id,button] of eventButtons)button.setAttribute('aria-pressed',String(id===event.id));
+    if(earthEventsOpen&&eventViewingSite?.event!==event){
+      eventViewingSite={event,startAfter:performance.now()+90,position:null,ready:false,publish:false};
+      eventsLaunch.disabled=true;
+      eventsLaunchLabel.textContent='Preparing site';
+      eventSiteStatus.textContent='Preparing terrain…';
+      eventSiteStatus.dataset.ready='false';
+    }
+  }
+
+  let eventGroup='';
+  for(const event of eventOptions){
+    if(event.group!==eventGroup){
+      eventGroup=event.group;
+      const title=document.createElement('h3');
+      title.className='eventGroupTitle';
+      const symbol=eventGroup==='Solar eclipses'||eventGroup==='Sun and sky'?'sun':'moon';
+      title.innerHTML=`<svg class="uiIcon" aria-hidden="true" focusable="false"><use href="#icon-${symbol}"></use></svg>`;
+      title.append(eventGroup);
+      earthEventsList.append(title);
+    }
+    const button=document.createElement('button');
+    button.type='button';
+    button.className='earthEventChoice';
+    button.dataset.event=event.id;
+    const illustration=document.createElement('span');
+    illustration.className='eventMini';
+    illustration.setAttribute('aria-hidden','true');
+    const title=document.createElement('strong');
+    title.textContent=event.title;
+    button.append(illustration,title);
+    button.addEventListener('click',()=>previewEarthEvent(event));
+    button.addEventListener('dblclick',()=>selectEarthEvent(event));
+    button.addEventListener('keydown',key=>{
+      if(!['ArrowUp','ArrowDown','Home','End'].includes(key.key))return;
+      key.preventDefault();
+      const index=eventOptions.indexOf(event),step=key.key==='ArrowUp'?-1:1;
+      const next=key.key==='Home'?0:key.key==='End'?eventOptions.length-1:
+        (index+step+eventOptions.length)%eventOptions.length;
+      previewEarthEvent(eventOptions[next]);
+      eventButtons.get(eventOptions[next].id).focus();
+    });
+    eventButtons.set(event.id,button);
+    earthEventsList.append(button);
+  }
+  previewEarthEvent(previewedEvent);
 
   function bodyKind(p) {
     if (p.blackhole) return 'BLACK HOLE';
@@ -3449,11 +3822,12 @@
     finderOpen = false;
     finderEl.style.display = 'none';
     finderSearch.blur();
-    if (resume) renderer.domElement.requestPointerLock();
-    else overlay.style.display = document.pointerLockElement ? 'none' : 'flex';
+    if (resume) resumeGame();
+    else showPauseMenu();
   }
   document.addEventListener('mousemove', e => {
-    if (!document.pointerLockElement) return;
+    if (!document.pointerLockElement||gamePaused()) return;
+    if(e.movementX||e.movementY)earthEventAim=false;
     if (overview) {
       oyaw += e.movementX * mouseSens;
       opitch = Math.max(-1.5, Math.min(1.5, opitch + (invertY ? -e.movementY : e.movementY) * mouseSens));
@@ -3465,11 +3839,32 @@
     // at the camera's final world position instead of limiting player input.
     pitch = Math.max(-1.45, Math.min(1.45, pitch + (invertY ? -e.movementY : e.movementY) * mouseSens));
   });
-  document.getElementById('setSens').addEventListener('input', e => { mouseSens = e.target.value / 10000; });
-  document.getElementById('setInvert').addEventListener('change', e => { invertY = e.target.checked; });
+  const sensitivityInput=document.getElementById('setSens'),invertInput=document.getElementById('setInvert');
+  const sensitivityValue=document.getElementById('sensitivityValue');
+  try{
+    sensitivityInput.value=localStorage.getItem('godman_sensitivity')||sensitivityInput.value;
+    invertInput.checked=localStorage.getItem('godman_invert_y')==='true';
+  }catch(error){}
+  function updateLookSettings(){
+    mouseSens=Number(sensitivityInput.value)/10000;
+    invertY=invertInput.checked;
+    sensitivityValue.value=sensitivityInput.value;
+  }
+  updateLookSettings();
+  function saveLookSettings(){
+    updateLookSettings();
+    try{
+      localStorage.setItem('godman_sensitivity',sensitivityInput.value);
+      localStorage.setItem('godman_invert_y',String(invertY));
+    }catch(error){}
+  }
+  sensitivityInput.addEventListener('input',saveLookSettings);
+  invertInput.addEventListener('change',saveLookSettings);
   document.getElementById('setQuality').addEventListener('change', e => {
     const q = parseFloat(e.target.value);
     adaptiveQuality.setPreference(q);
+    redrawPausedScene=true;
+    try{localStorage.setItem('godman_graphics_quality',String(q));}catch(error){}
     characterKey.castShadow = q >= 1.5;
     shoulderFlashlight.setQuality(q);
     const shadowSize=q>=2.2?2048:1024;
@@ -3486,23 +3881,77 @@
     toast(fullScaleTerrain?'Adaptive terrain: up to '+terrainRangeWidth(terrainRadiusPreference)+' km across':
       'Terrain distance: '+width+' × '+width+' chunks — streaming global mountains');
   });
+  try{
+    const quality=document.getElementById('setQuality'),stored=localStorage.getItem('godman_graphics_quality');
+    if([...quality.options].some(option=>option.value===stored))quality.value=stored;
+  }catch(error){}
   const _setMusic = document.getElementById('setMusic');
   if (_setMusic) _setMusic.addEventListener('change', e => {
     musicOn = e.target.checked;
     if (musicOn && document.pointerLockElement) startMusic();
     else if (!musicOn) stopMusic();
   });
-  function renderAchievements() {
-    const list = document.getElementById('achList');
-    const worlds = planets.filter(p => !p.isStar);
-    let html = '<div style="text-align:center;margin-bottom:10px;font-size:16px;color:#ffd27d">' +
-      worlds.filter(p => visited.has(p.name)).length + ' / ' + worlds.length + ' worlds explored</div>';
-    for (const p of worlds) {
-      const ok = visited.has(p.name);
-      html += '<div class="achRow"><span>' + p.name + '</span><span class="' +
-        (ok ? 'ok">visited' : 'no">not yet') + '</span></div>';
+  const achievementSearch=document.getElementById('achSearch');
+  const achievementList=document.getElementById('achList');
+  const achievementFilters=[...document.querySelectorAll('[data-ach-filter]')];
+  let achievementFilter='all';
+  achievementSearch.addEventListener('input',renderAchievements);
+  for(const button of achievementFilters){
+    button.addEventListener('click',()=>{
+      achievementFilter=button.dataset.achFilter;
+      for(const filter of achievementFilters)filter.setAttribute('aria-pressed',String(filter===button));
+      renderAchievements();
+    });
+  }
+
+  function renderAchievements(){
+    const worlds=planets.filter(body=>!body.isStar);
+    const explored=worlds.filter(body=>visited.has(body.name));
+    document.getElementById('achVisited').textContent=String(explored.length);
+    document.getElementById('achTotal').textContent='of '+worlds.length;
+    const progress=document.getElementById('achProgress');
+    progress.max=Math.max(1,worlds.length);
+    progress.value=explored.length;
+    const knownNames=new Set(explored.map(body=>body.name));
+    const latest=Array.from(visited).findLast(name=>knownNames.has(name));
+    document.getElementById('achLatest').textContent=latest?'Last recorded world · '+latest:'Land on a world to record it here.';
+    const query=achievementSearch.value.trim().toLowerCase();
+    const entries=worlds.filter(body=>{
+      const recorded=visited.has(body.name);
+      return (achievementFilter==='all'||recorded===(achievementFilter==='visited'))&&
+        (!query||body.name.toLowerCase().includes(query));
+    }).sort((a,b)=>Number(visited.has(b.name))-Number(visited.has(a.name))||a.name.localeCompare(b.name));
+    const cards=document.createDocumentFragment();
+    for(const body of entries){
+      const recorded=visited.has(body.name);
+      const card=document.createElement('div');
+      card.className='worldLogCard';
+      card.dataset.recorded=String(recorded);
+      const emblem=document.createElement('span');
+      emblem.className='worldLogEmblem';
+      emblem.dataset.earth=String(body===earth);
+      emblem.setAttribute('aria-hidden','true');
+      const color=Number.isInteger(body.propColor)?body.propColor:0x8b889e;
+      emblem.style.setProperty('--world-tone','#'+color.toString(16).padStart(6,'0'));
+      const caption=document.createElement('div');
+      const name=document.createElement('strong');
+      name.textContent=body.name;
+      const type=document.createElement('small');
+      type.textContent=bodyKind(body);
+      caption.append(name,type);
+      const mark=document.createElement('span');
+      mark.className='worldLogMark';
+      mark.textContent=recorded?'Visited':'Unvisited';
+      card.append(emblem,caption,mark);
+      cards.append(card);
     }
-    list.innerHTML = html;
+    if(!entries.length){
+      const empty=document.createElement('p');
+      empty.className='logEmpty';
+      empty.textContent='No worlds match this filter.';
+      cards.append(empty);
+    }
+    achievementList.replaceChildren(cards);
   }
 
   // ---------- Helpers ----------
@@ -3724,7 +4173,7 @@
   const EARTH_SEA_LEVEL=.42;
   let earthHydrography=null,earthHydrographyLoading=true;
   const earthInlandSample={kind:0};
-  const earthHydrographyReady=window.GodmanEarthHydrography.load('assets/earth/hydrography.bin?v=20261110.47.1')
+  const earthHydrographyReady=window.GodmanEarthHydrography.load('assets/earth/hydrography.bin?v=20261111.48')
     .then(data=>{earthHydrography=data;})
     .catch(error=>console.warn(error))
     .finally(()=>{earthHydrographyLoading=false;});
@@ -3851,18 +4300,22 @@
     const latitude=Math.asin(Math.max(-1,Math.min(1,n.y)))*180/Math.PI;
     return earthHydrography.sample(longitude,latitude,earthInlandSample);
   }
-  function earthWaterLevelLocal(n,coast=earthCoastDistance(n),inland=sampleEarthInlandWater(n)){
-    if(inland.kind)return inland.bank<=0?worldMeters(inland.level):null;
-    return coast<0?EARTH_SEA_LEVEL:null;
+  function earthRiverLevel(level,coast){
+    const upstream=THREE.MathUtils.smoothstep(coast,0,worldMeters(2800));
+    return THREE.MathUtils.lerp(EARTH_SEA_LEVEL,worldMeters(level),upstream);
   }
-  function inlandBankElevation(inland,dryElevation){
-    const {kind,level,bank,transition}=inland;
-    if(bank<=0){
-      const depth=kind===1?Math.min(65,-bank*.075):Math.min(12,-bank*.13);
-      return worldMeters(level-depth);
-    }
-    const bankHeight=worldMeters(level+bank*(kind===1?.022:.09));
-    return THREE.MathUtils.lerp(bankHeight,dryElevation,THREE.MathUtils.smoothstep(bank,0,transition));
+  function earthInlandLevel(inland,coast){
+    return inland.kind===1?worldMeters(inland.level):earthRiverLevel(inland.level,coast);
+  }
+  function earthWaterLevelLocal(n,coast=earthCoastDistance(n),inland=sampleEarthInlandWater(n)){
+    if(inland.kind===1&&inland.bank<=0)return earthInlandLevel(inland,coast);
+    if(coast<0)return EARTH_SEA_LEVEL;
+    return inland.kind&&inland.bank<=0?earthInlandLevel(inland,coast):null;
+  }
+  function inlandBankElevation(inland,dryElevation,coast){
+    const level=earthInlandLevel(inland,coast);
+    const riverLevel=Number.isFinite(inland.riverDistance)?earthRiverLevel(inland.riverLevel,coast):level;
+    return window.GodmanEarthHydrography.bankElevation(inland,dryElevation,level,metersPerUnit,riverLevel);
   }
   function earthReefAt(n,coast){
     if(coast>=0||coast<-worldSize(7800)||Math.abs(n.y)>.57)return 0;
@@ -3883,8 +4336,8 @@
     const inland=sampleEarthInlandWater(n);
     const water=earthWaterLevelLocal(n,coast,inland);
     if(water!==null)return water;
-    if(inland.kind)return inlandBankElevation(inland,base);
-    return window.GodmanTerrainSurface.coastElevation(coast,base,0,EARTH_SEA_LEVEL,worldFactor);
+    const ground=window.GodmanTerrainSurface.coastElevation(coast,base,0,EARTH_SEA_LEVEL,worldFactor);
+    return inland.kind?inlandBankElevation(inland,ground,coast):ground;
   }
   function earthWaterAtWorld(nWorld){
     earthTileQ.copy(earth.mesh.quaternion).invert();earthTileN.copy(nWorld).applyQuaternion(earthTileQ).normalize();
@@ -3893,8 +4346,12 @@
   function earthFineReliefLocal(n,baseElevation,coast=earthCoastDistance(n),reef=earthReefAt(n,coast),inland=sampleEarthInlandWater(n)){
     if(!earthElevation.ready)return .18;
     const coastElevation=window.GodmanTerrainSurface.coastElevation;
-    if(inland.kind&&inland.bank<=0)return inlandBankElevation(inland,baseElevation)-baseElevation;
-    if(coast<0&&!inland.kind){
+    if(inland.kind&&inland.bank<=0&&(inland.kind===1||coast>=0)){
+      const bed=inlandBankElevation(inland,baseElevation,coast);
+      const bedBlend=inland.kind===1?1:THREE.MathUtils.smoothstep(coast,0,worldMeters(300));
+      return THREE.MathUtils.lerp(EARTH_SEA_LEVEL,bed,bedBlend)-baseElevation;
+    }
+    if(coast<0){
       const x=n.x*earth.r,y=n.y*earth.r,z=n.z*earth.r;
       const bed=coastElevation(coast,0,0,EARTH_SEA_LEVEL,worldFactor);
       const depth=EARTH_SEA_LEVEL-bed;
@@ -3920,8 +4377,8 @@
     const lowland=(1-mountainMask)*(1.2+Math.pow(rangeRidge,2)*5.5+foothill*3.2);
     const regionalLift=Math.pow(earthValueNoise3(x/4200,y/4200,z/4200),2.2)*(8+mountainMask*28);
     const relief=lowland+ranges+regionalLift+fine*(1.4+mountainMask*3.6)+micro*(.45+mountainMask*1.2);
-    if(inland.kind)return inlandBankElevation(inland,baseElevation+relief)-baseElevation;
-    return coastElevation(coast,baseElevation,relief,EARTH_SEA_LEVEL,worldFactor)-baseElevation;
+    const ground=coastElevation(coast,baseElevation,relief,EARTH_SEA_LEVEL,worldFactor);
+    return (inland.kind?inlandBankElevation(inland,ground,coast):ground)-baseElevation;
   }
   function earthFineReliefWorld(nWorld){
     if(!earthElevation.ready)return 0;
@@ -3954,7 +4411,7 @@
       const waterLevel=earthWaterLevelLocal(earthTileN);
       if(waterLevel!==null)return earth.r+waterLevel;
     }
-    if(fullScaleTerrain&&!earth.craters?.length){
+    if(!earth.craters?.length){
       const contact=earthLoadedSurfaceRadius(earthTileN);
       if(contact!==null)return contact;
     }
@@ -4063,13 +4520,16 @@
       .replace('#include <emissivemap_fragment>','#include <emissivemap_fragment>\ntotalEmissiveRadiance+=vec3(1.25,.16,.012)*earthMeltHeat*(.35+.65*sin(earthTerrainTime*2.7+vEarthMeltStrength*19.0)*sin(earthTerrainTime*2.7+vEarthMeltStrength*19.0));');
   };
   earthTileMat.customProgramCacheKey=()=> 'earth-ground-coast-v1';
-  const earthWaterTime={value:0};
+  const earthWaterTime={value:0},earthWaterDaylight={value:0};
   const earthWaterMat=new THREE.MeshPhysicalMaterial({
     color:0xffffff,roughness:.27,metalness:0,transparent:true,opacity:.84,
     clearcoat:.72,clearcoatRoughness:.16,reflectivity:.3,depthWrite:false,side:THREE.DoubleSide
   });
   earthWaterMat.onBeforeCompile=shader=>{
     shader.uniforms.earthWaterTime=earthWaterTime;
+    shader.uniforms.earthWaterDaylight=earthWaterDaylight;
+    shader.uniforms.earthWaterSkyTint={value:skyLight.color};
+    shader.uniforms.earthTilePlanetInverse=earthTilePlanetInverse;
     shader.uniforms.earthWaterCenter=earthSurfaceCutaway.center;
     shader.uniforms.earthWaterCutaway=earthSurfaceCutaway.chordSq;
     shader.uniforms.earthWaterScale={value:Math.sqrt(worldFactor)};
@@ -4092,8 +4552,9 @@
         transformed+=objectNormal*earthWave*smoothstep(0.,1.,earthWaterDepth);`);
     shader.fragmentShader=shader.fragmentShader
       .replace('#include <common>',`#include <common>
-        uniform vec3 earthWaterCenter;
-        uniform float earthWaterCutaway,earthWaterTime,earthWaterScale,earthWaterMetresPerUnit;
+        uniform vec3 earthWaterCenter,earthWaterSkyTint;
+        uniform mat3 earthTilePlanetInverse;
+        uniform float earthWaterCutaway,earthWaterTime,earthWaterScale,earthWaterMetresPerUnit,earthWaterDaylight;
         varying vec3 vEarthWaterDirection;
         varying vec4 vEarthWater;
         varying float vEarthInlandWater;`)
@@ -4122,11 +4583,30 @@
         diffuseColor.a=mix(clearOpacity,.96,smoothstep(.04,16.,depth))*
           smoothstep(-.015,.15,depth)*smoothstep(0.,max(earthWaterCutaway*.075,1e-10),edge);`)
       .replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
-        float waterFacing=clamp(abs(dot(normalize(normal),normalize(vViewPosition))),0.,1.);
+        // Waves perturb the reflected sunlight. Fade slopes at subpixel
+        // distances so they don't shimmer when the camera moves.
+        vec2 wavePhase=vEarthWater.zw*.33;
+        float waveFilter=1.-smoothstep(.25,.8,max(fwidth(wavePhase.x),fwidth(wavePhase.y)));
+        vec2 windWave=vec2(.91,.38),crossWave=vec2(-.27,1.21);
+        vec2 slope=(.013*windWave*cos(dot(wavePhase,windWave)-earthWaterTime*1.25)
+          +.007*crossWave*cos(dot(wavePhase,crossWave)+earthWaterTime*.9))*waveFilter;
+        vec3 waterRadial=normalize(vEarthWaterDirection);
+        vec3 east=vec3(waterRadial.z,0.,-waterRadial.x);
+        float latitudeScale=max(length(east),.001);
+        east/=latitudeScale;
+        vec3 north=cross(waterRadial,east);
+        vec3 localSlope=east*slope.x/max(latitudeScale,.35)+north*slope.y;
+        normal=normalize(normal-mat3(viewMatrix)*(localSlope*earthTilePlanetInverse));
+        float waterFacing=clamp(abs(dot(normal,normalize(vViewPosition))),0.,1.);
         float waterFresnel=pow(1.-waterFacing,4.);
-        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.055,.23,.32),waterFresnel*.42);`);
+        vec3 inlandReflection=mix(vec3(.20,.36,.49),earthWaterSkyTint*.54,.48);
+        vec3 skyReflection=mix(vec3(.055,.23,.32),inlandReflection,vEarthInlandWater);
+        float reflection=waterFresnel*mix(.42,.66*earthWaterDaylight,vEarthInlandWater);
+        diffuseColor.rgb=mix(diffuseColor.rgb,skyReflection,reflection);`)
+      .replace('#include <roughnessmap_fragment>',`#include <roughnessmap_fragment>
+        roughnessFactor=mix(roughnessFactor,.23,vEarthInlandWater);`);
   };
-  earthWaterMat.customProgramCacheKey=()=> 'earth-water-inland-v1';
+  earthWaterMat.customProgramCacheKey=()=> 'earth-water-inland-v3';
   function resetEarthSurfaceTiles(){
     for(const tile of earthSurfaceTiles.tiles.values()){
       earthDetailRoot.remove(tile.group);
@@ -4167,17 +4647,26 @@
         dir.set(-Math.cos(lon)*c,Math.sin(lat),Math.sin(lon)*c).normalize();
         const base=sampleEarthElevationRaster(dir),coast=earthCoastDistance(dir);
         const inland=sampleEarthInlandWater(dir),inlandKind=inland.kind;
-        const water=earthWaterLevelLocal(dir,coast,inland)!==null;
-        const reef=inlandKind?0:earthReefAt(dir,coast);
+        const surfaceLevel=earthWaterLevelLocal(dir,coast,inland);
+        const water=surfaceLevel!==null;
+        const inlandShore=inlandKind!==0&&(coast>=0||inlandKind===1&&inland.bank<=0);
+        const reef=inlandShore?0:earthReefAt(dir,coast);
         const baseRadius=earth.r+base+earthFineReliefLocal(dir,base,coast,reef,inland);
         const rr=baseRadius+earthCraterDispLocal(dir);
-        const waterLevel=inlandKind?worldMeters(inland.level):EARTH_SEA_LEVEL;
+        const waterLevel=surfaceLevel??(inlandShore?earthInlandLevel(inland,coast):EARTH_SEA_LEVEL);
         // Keep dry bank vertices outside the water contour, including where
         // the underlying coarse elevation raster falls below a lake level.
         waterLevels[k]=water?waterLevel:Math.min(waterLevel,rr-earth.r-.02);
-        inlandWater[k]=inlandKind?1:0;
-        const shore=inlandKind?Infinity:coast/worldFactor;
-        if(!water&&shore<240){
+        inlandWater[k]=inlandShore?1:0;
+        const shore=coast/worldFactor;
+        if(!water&&inlandShore){
+          const shoreDistance=inland.bank;
+          const shoreWidth=inlandKind===1?135:62;
+          const sediment=1-THREE.MathUtils.smoothstep(shoreDistance,5,shoreWidth);
+          const moisture=earthValueNoise3(dir.x*earth.r/260,dir.y*earth.r/260,dir.z*earth.r/260);
+          coastalBiomes[k*4]=sediment*(.48+.32*moisture);
+          coastalBiomes[k*4+1]=(1-sediment)*(1-THREE.MathUtils.smoothstep(shoreDistance,shoreWidth,shoreWidth*3))*(.16+.28*moisture);
+        }else if(!water&&shore<240){
           const steep=THREE.MathUtils.smoothstep(base/worldFactor,18,110);
           const sheltered=earthValueNoise3(dir.x*earth.r/2600,dir.y*earth.r/2600,dir.z*earth.r/2600);
           const wetland=(1-steep)*THREE.MathUtils.smoothstep(sheltered,.46,.72)*
@@ -4307,15 +4796,17 @@
     const {lonCells,latCells}=committedGrid;
     const longitude=(Math.atan2(direction.z,-direction.x)+Math.PI*2)%(Math.PI*2);
     const x=longitude/(Math.PI*2)*lonCells;
-    const y=Math.min(latCells, (Math.asin(Math.max(-1,Math.min(1,direction.y)))+Math.PI*.5)/Math.PI*latCells);
+    const y=Math.max(0,Math.min(latCells, (Math.asin(Math.max(-1,Math.min(1,direction.y)))+Math.PI*.5)/Math.PI*latCells));
     const ix=Math.min(lonCells-1,Math.floor(x)),iy=Math.min(latCells-1,Math.floor(y));
-    const tile=committedCells.get(ix+':'+iy);
+    const tile=committedCells?.get(ix+':'+iy);
     return tile?terrainSurface.tileRadius(tile,x-ix,y-iy,direction):null;
   }
-  function updateEarthCutaway(altitude){
+  function updateEarthCutaway(altitude,fastFlightBlend){
     // Keep the detailed ring cached above the transition so it is ready
     // during descent. Shrink its visible footprint before handing off.
-    const coverage=1-THREE.MathUtils.smoothstep(altitude,1550,3450);
+    const ordinaryCoverage=1-THREE.MathUtils.smoothstep(altitude,1550,3450);
+    const lowFlightCoverage=1-THREE.MathUtils.smoothstep(altitude,850,1700);
+    const coverage=THREE.MathUtils.lerp(ordinaryCoverage,lowFlightCoverage,fastFlightBlend);
     if(!earthSurfaceTiles.committedSignature||coverage<=0){
       earthSurfaceCutaway.chordSq.value=-1;
       return;
@@ -4325,22 +4816,35 @@
     earthSurfaceCutaway.chordSq.value=terrainChordSq<0?-1:terrainChordSq*scale;
   }
 
-  function updateEarthSurfaceTiles(flightSpeed=0,buildBudget=2.5){
+  function updateEarthSurfaceTiles(flightSpeed=0,buildBudget=2.5,site=null){
+    const warming=site&&!site.publish;
     earthSurfaceTiles.frame++;
-    earthTileQ.copy(earth.mesh.quaternion).invert();earthTileN.copy(pos).sub(earth.center);
+    earthTileQ.copy(earth.mesh.quaternion).invert();earthTileN.copy(site?.position||pos).sub(earth.center);
     const seaAltitude=earthTileN.length()-earth.r;
     earthTileN.normalize().applyQuaternion(earthTileQ).normalize();
-    // Terrain detail follows clearance above the ground. High peaks keep the
-    // full ring, and the ring gives way to the globe once seen from above.
-    const waterLevel=earthWaterLevelLocal(earthTileN);
-    const altitude=waterLevel!==null?seaAltitude-waterLevel:
-      (fullScaleTerrain?seaAltitude-sampleEarthElevationRaster(earthTileN):seaAltitude);
-    const active=!earth.destroyed&&earthElevation.ready&&!earthHydrographyLoading&&altitude<5000&&
-      (!fullScaleTerrain||altitude<950||flightSpeed<500);
-    const flightLod=fullScaleTerrain&&altitude>40&&flightSpeed>(earthSurfaceTiles.flightLod?75:110);
-    earthSurfaceTiles.flightLod=flightLod;
-    earthSurfaceCutaway.detail.value=active?1-THREE.MathUtils.smoothstep(altitude,1150,3000):0;
+    // Use the analytical surface so the streaming height stays continuous
+    // across shorelines and independent of which mesh is currently visible.
+    const terrainReady=!earth.destroyed&&earthElevation.ready&&!earthHydrographyLoading;
+    let altitude=seaAltitude;
+    if(terrainReady&&seaAltitude<worldMeters(9500)+5000){
+      const coast=earthCoastDistance(earthTileN),inland=sampleEarthInlandWater(earthTileN);
+      const waterLevel=earthWaterLevelLocal(earthTileN,coast,inland);
+      if(waterLevel!==null)altitude-=waterLevel;
+      else{
+        const base=sampleEarthElevationRaster(earthTileN);
+        altitude-=base+earthFineReliefLocal(earthTileN,base,coast,0,inland);
+      }
+    }
+    const active=terrainReady&&altitude<5000;
+    const fastFlightBlend=fullScaleTerrain?THREE.MathUtils.smoothstep(flightSpeed,430,630):0;
+    const flightLod=fullScaleTerrain&&altitude>(earthSurfaceTiles.flightLod?30:55)&&
+      flightSpeed>(earthSurfaceTiles.flightLod?75:110);
+    if(!warming){
+      earthSurfaceTiles.flightLod=flightLod;
+      earthSurfaceCutaway.detail.value=active?1-THREE.MathUtils.smoothstep(altitude,1150,3000):0;
+    }
     if(!active){
+      if(site)return false;
       if(earthSurfaceTiles.pendingSignature){
         for(const tile of earthSurfaceTiles.tiles.values())tile.group.visible=false;
         earthSurfaceTiles.committedKeys.clear();earthSurfaceTiles.pendingKeys.clear();
@@ -4350,11 +4854,17 @@
       }
       earthSurfaceCutaway.chordSq.value=-1;return;
     }
+    // Pause refinement during fast overflight. Retain the complete ring so
+    // small altitude or speed changes cannot blank it and start another build.
+    if(fastFlightBlend>=1&&altitude>=1700){
+      updateEarthCutaway(altitude,fastFlightBlend);
+      return;
+    }
     let lon=Math.atan2(earthTileN.z,-earthTileN.x);if(lon<0)lon+=Math.PI*2;const lat=Math.asin(Math.max(-1,Math.min(1,earthTileN.y)));
     const angular=earthSurfaceTiles.tileSize/earth.r,lonCells=Math.ceil(Math.PI*2/angular),latCells=Math.ceil(Math.PI/angular),lonStep=Math.PI*2/lonCells,latStep=Math.PI/latCells;
     const gridX=lon/lonStep,gridY=(lat+Math.PI*.5)/latStep;
     let cx=Math.floor(gridX),cy=Math.max(0,Math.min(latCells-1,Math.floor(gridY)));
-    if(earthSurfaceTiles.pendingSignature){
+    if(!site&&earthSurfaceTiles.pendingSignature){
       // Keep one terrain plan while the player skims a cell boundary.
       const dx=(gridX-earthSurfaceTiles.planX-.5+lonCells*1.5)%lonCells-lonCells*.5;
       if(Math.abs(dx)<.53)cx=earthSurfaceTiles.planX;
@@ -4364,16 +4874,20 @@
       earthTileN.distanceToSquared(earthSurfaceTiles.committedCenter)<earthSurfaceTiles.terrainChordSq;
     // Give a new landing area a small usable surface while the wider ring
     // streams. At speed, keep this compact until walking detail is useful.
-    const compact=fullScaleTerrain&&(!haveContactArea||flightSpeed>=500);
     const previousPlan=earthSurfaceTiles.committedSignature;
+    const compact=!!site||fullScaleTerrain&&(!haveContactArea||fastFlightBlend>0&&previousPlan.endsWith(':contact'));
     const landingDetail=fullScaleTerrain&&!compact&&(!flightLod||altitude<180&&flightSpeed<240)&&
       (previousPlan.endsWith(':contact')||previousPlan.endsWith(':flight')||flightLod&&previousPlan.endsWith(':landing'));
     const radius=compact||landingDetail&&earthSurfaceTiles.committedGrid?.radius===1?1:earthSurfaceTiles.activeRadius;
     // Latitude/longitude cells narrow toward the poles. Expand the horizontal
     // ring there so the selected distance remains approximately circular.
     const lonRadius=Math.min(radius+4,Math.max(radius,Math.ceil(radius/Math.max(.35,Math.cos(lat)))));
-    const signature=cx+':'+cy+':'+radius+':'+lonRadius+(compact?':contact':landingDetail?':landing':flightLod?':flight':'');
+    const signature=cx+':'+cy+':'+radius+':'+lonRadius+(site?':viewing-site':compact?':contact':landingDetail?':landing':flightLod?':flight':'');
     if(signature===earthSurfaceTiles.committedSignature){
+      if(site){
+        if(!warming)updateEarthCutaway(altitude,fastFlightBlend);
+        return true;
+      }
       // A completed ring and its planet-local clipping direction stay fixed
       // until the player crosses a cell or range boundary.
       if(earthSurfaceTiles.pendingSignature!==signature){
@@ -4383,7 +4897,7 @@
         earthSurfaceTiles.pendingCenter.copy(earthSurfaceTiles.committedCenter);
         earthSurfaceTiles.pendingBuilds.length=0;earthSurfaceTiles.tileTask=null;
       }
-      updateEarthCutaway(altitude);
+      updateEarthCutaway(altitude,fastFlightBlend);
       return;
     }
     if(signature!==earthSurfaceTiles.pendingSignature){
@@ -4393,7 +4907,8 @@
         const ring=d<=(fullScaleTerrain?1:2)?0:(d<=12?1:(d<=36?2:3));
         let lod=fullScaleTerrain&&d>0?ring+1:ring;
         if(landingDetail||flightLod)lod=landingDetail&&d===0?1:Math.max(3,ring+1);
-        if(compact)lod=d===0?3:4;
+        if(site)lod=d===0?1:fullScaleTerrain?4:3;
+        else if(compact)lod=d===0?3:4;
         const cell=ix+':'+iy,old=requested.get(cell);
         if(!old||d<old.d)requested.set(cell,{ix,iy,lod,d});
       }
@@ -4419,21 +4934,18 @@
     const buildStart=performance.now(),buildLimit=earthSurfaceTiles.activeRadius>=7?2:3;
     for(let i=0;i<buildLimit&&earthSurfaceTiles.nextBuild<pendingBuilds.length;i++){
       const m=pendingBuilds[earthSurfaceTiles.nextBuild];
-      let tile;
-      if(fullScaleTerrain){
-        const task=earthSurfaceTiles.tileTask||(earthSurfaceTiles.tileTask=createEarthSurfaceTile(m.ix,m.iy,lonCells,latCells,m.lod));
-        let row;
-        do{row=task.next();}while(!row.done&&performance.now()-buildStart<buildBudget);
-        if(!row.done)break;
-        tile=row.value;earthSurfaceTiles.tileTask=null;
-      }else tile=buildEarthSurfaceTile(m.ix,m.iy,lonCells,latCells,m.lod);
-      tile.group.visible=false;
+      const task=earthSurfaceTiles.tileTask||(earthSurfaceTiles.tileTask=createEarthSurfaceTile(m.ix,m.iy,lonCells,latCells,m.lod));
+      let row;
+      do{row=task.next();}while(!row.done&&performance.now()-buildStart<buildBudget);
+      if(!row.done)break;
+      row.value.group.visible=false;
+      earthSurfaceTiles.tileTask=null;
       earthSurfaceTiles.nextBuild++;
-      if(performance.now()-buildStart>(fullScaleTerrain?buildBudget:6))break;
+      if(performance.now()-buildStart>=buildBudget)break;
     }
     // Keep the committed ring intact until all replacement tiles are ready.
     const committed=earthSurfaceTiles.nextBuild===pendingBuilds.length;
-    if(committed){
+    if(committed&&!warming){
       for(const key of earthSurfaceTiles.committedKeys){const old=earthSurfaceTiles.tiles.get(key);if(old)old.group.visible=false;}
       earthSurfaceTiles.committedKeys=new Set(earthSurfaceTiles.pendingKeys);
       earthSurfaceTiles.committedSignature=signature;
@@ -4449,7 +4961,7 @@
         latitude,longitudeSpan,south,north,angular*.20
       );
     }
-    updateEarthCutaway(altitude);
+    if(!warming)updateEarthCutaway(altitude,fastFlightBlend);
     const cacheMargin=Math.max(24,earthSurfaceTiles.activeRadius*8),cacheLimit=pendingKeys.size+cacheMargin;
     if(earthSurfaceTiles.tiles.size>cacheLimit){
       const protectedKeys=new Set([...earthSurfaceTiles.committedKeys,...earthSurfaceTiles.pendingKeys]);
@@ -5142,6 +5654,11 @@
   function animate() {
     requestAnimationFrame(animate);
     const frameDt=clock.getDelta(),dt=Math.min(frameDt,0.05);
+    if(loaderHidden&&gamePaused()){
+      if(earthEventsOpen)prepareEarthEventTerrain();
+      if(redrawPausedScene){renderer.render(scene,camera);redrawPausedScene=false;}
+      return;
+    }
     if(profileEnabled)profileStart=performance.now();
     elapsed += dt;
     for(const material of stellarSurfaceMaterials)material.uniforms.time.value=elapsed;
@@ -5152,19 +5669,33 @@
     // --- planetary motion: orbits + axial spin at real (compressed) rates ---
     const simdt = dt * TIME_SCALE;
     for (const p of planets) {
-      if (p.orbit) {
+      const observationOrbit=p===moon?eventMoonOrbit:null;
+      if(p.orbit){
         p.prevCenter.copy(p.center);
-        p.orbit.ang += p.orbit.w * simdt;
-        const oa = p.orbit.ang, oi = p.orbit.inc, oR = p.orbit.R, c0 = p.orbit.parent.center;
-        p.center.set(
-          c0.x + oR * Math.cos(oa),
-          c0.y + oR * Math.sin(oa) * Math.sin(oi),
-          c0.z + oR * Math.sin(oa) * Math.cos(oi));
+        p.orbit.ang+=p.orbit.w*simdt;
+        if(observationOrbit){
+          observationOrbit.offset.applyAxisAngle(observationOrbit.axis,observationOrbit.rate*simdt);
+          p.center.copy(earth.center).add(observationOrbit.offset);
+        }else{
+          const {ang,inc,R,parent}=p.orbit;
+          p.center.set(
+            parent.center.x+R*Math.cos(ang),
+            parent.center.y+R*Math.sin(ang)*Math.sin(inc),
+            parent.center.z+R*Math.sin(ang)*Math.cos(inc));
+          if(p===moon&&restoreMoonOrbit){
+            const oldDirection=tmpV.copy(p.prevCenter).sub(earth.prevCenter).normalize();
+            const newDirection=tmpV2.copy(p.center).sub(earth.center).normalize();
+            p.mesh.quaternion.premultiply(tmpQ.setFromUnitVectors(oldDirection,newDirection));
+            p.prevCenter.copy(p.center);
+            restoreMoonOrbit=false;
+          }
+        }
         p.velNow.copy(p.center).sub(p.prevCenter).divideScalar(dt);
       }
-      if (p.spinW) {
-        tmpQ.setFromAxisAngle(p.spinAxis, p.spinW * simdt);
-        p.mesh.quaternion.premultiply(tmpQ);
+      if(p.spinW){
+        const axis=observationOrbit?observationOrbit.axis:p.spinAxis;
+        const rate=observationOrbit?observationOrbit.rate:p.spinW;
+        p.mesh.quaternion.premultiply(tmpQ.setFromAxisAngle(axis,rate*simdt));
       }
       // cull worlds that are smaller than a pixel (their glows/labels remain)
       const visCull = target===p || pos.distanceTo(p.center) < p.r * 8000;
@@ -5458,7 +5989,7 @@
     // left the terrain one frame behind exactly when landing at high speed.
     const terrainStart=profileEnabled||earthRegional?performance.now():0;
     const terrainChanged=updateEarthSurfaceTiles(fullScaleTerrain&&!grounded?vel.length():0,loaderHidden?2.5:8);
-    if(terrainChanged&&fullScaleTerrain&&grounded&&groundPlanet===earth&&!earthInWater&&!earth.craters?.length){
+    if(terrainChanged&&grounded&&groundPlanet===earth&&!earthInWater&&!earth.craters?.length){
       const contact=earthLoadedSurfaceRadius(earthTileN);
       if(contact!==null){
         // Feet follow the new triangles immediately. Ease the camera through
@@ -5473,18 +6004,27 @@
     if(profileEnabled)profileTerrain=performance.now()-terrainStart;
 
     // ---------- Local lighting at the astronaut ----------
-    let skyFactor=0;
+    if(earthEvent&&pos.distanceToSquared(earth.center)>(earth.r+worldMeters(250000))**2)clearEarthEvent();
     const illuminationStar=nearestStarTo(pos);
     const eclipseVisibility=stellarVisibility(pos,illuminationStar,nearestP);
+    if(earthEvent?.solarOffset!==undefined){
+      const coverage=Math.round((1-eclipseVisibility)*100);
+      const label=coverage>0?coverage+'% of Sun covered':'Sun clear';
+      if(earthEventReadout.textContent!==label)earthEventReadout.textContent=label;
+    }
     const skyProfile=window.GodmanSkyProfile(nearestP);
     const atmosphericDepth=skyProfile?worldMeters(skyProfile.top):1;
+    lightingUp.copy(pos).sub(nearestP.center);
+    const bodyAltitude=Math.max(0,lightingUp.length()-nearestP.r);
+    lightingUp.normalize();
+    lightingSun.copy(illuminationStar.center).sub(pos);
+    const starDistance=lightingSun.length();
+    lightingSun.normalize();
+    const sunHeight=THREE.MathUtils.clamp(lightingUp.dot(lightingSun),-1,1);
     const immersion=skyProfile?1-THREE.MathUtils.smoothstep(Math.max(0,distSurf),atmosphericDepth*.12,atmosphericDepth*1.25):0;
-    if(skyProfile){
-      const upN=tmpV.copy(pos).sub(nearestP.center).normalize();
-      const starDir=tmpV3.copy(illuminationStar.center).sub(pos).normalize();
-      skyFactor=immersion*window.GodmanSkyDaylight(upN.dot(starDir))*eclipseVisibility;
-      skyLight.position.copy(upN);
-    }
+    const ambientEclipse=Math.max(.028,eclipseVisibility);
+    const skyFactor=immersion*window.GodmanSkyDaylight(sunHeight)*ambientEclipse;
+    earthWaterDaylight.value=skyFactor;
 
     // ---------- Asteroids & explosions ----------
     for (let i = asteroids.length - 1; i >= 0; i--) {
@@ -5752,21 +6292,51 @@
     updateAuthoredRepulsors(dt,thrusting&&!earthInWater);
     if(profileEnabled)profileAnimation=performance.now()-profileAnimation;
 
-    const starDistance=pos.distanceTo(illuminationStar.center);
-    tmpV.copy(illuminationStar.center).sub(pos).normalize();
     const nearAtmosphere=!!skyProfile&&distSurf<atmosphericDepth*1.5;
-    const sunHeight=Math.max(-1,Math.min(1,smoothUp.dot(tmpV)));
-    const earthTwilight=nearestP===earth&&nearAtmosphere;
-    const twilight=earthTwilight?window.GodmanPhysicalLighting.earthTwilight(sunHeight):0;
-    // Elevated terrain can catch the last rays below the sea-level horizon.
-    const horizonDip=earthTwilight?Math.min(.055,Math.sqrt(2*Math.max(0,distSurf)/earth.r))*immersion:0;
-    const fullSun=nearAtmosphere?.10-(earthTwilight?.038*immersion:0):.015;
-    const directDay=THREE.MathUtils.smoothstep(sunHeight+horizonDip,nearAtmosphere?-.025:0,fullSun);
+    const earthLighting=nearestP===earth&&nearAtmosphere;
+    const twilight=earthLighting?window.GodmanPhysicalLighting.earthTwilight(sunHeight):0;
+    // The bright side of the twilight sky is closer to the sunward horizon.
+    skyLight.position.copy(lightingUp).addScaledVector(lightingSun,twilight*skyFactor*.24);
+    const earthHorizon=nearestP===earth;
+    const starAngularRadius=Math.asin(THREE.MathUtils.clamp(illuminationStar.r/starDistance,.001,.1));
+    const lightingModel=window.GodmanPhysicalLighting;
+    const directDay=earthHorizon?lightingModel.earthSunVisibility(sunHeight,distSurf,earth.r,starAngularRadius):
+      THREE.MathUtils.smoothstep(sunHeight,nearAtmosphere?-.025:0,nearAtmosphere?.10:.015);
+    lunarSunDirection.value.copy(sun.center).sub(moon.center);
+    lunarSolarAngle.value=Math.asin(Math.min(1,sun.r/lunarSunDirection.value.length()));
+    lunarSunDirection.value.normalize();
+    lunarEarthOffset.value.copy(earth.center).sub(moon.center).divideScalar(moon.r);
+    moonToEarth.copy(lunarEarthOffset.value).normalize();
+    lunarEclipse.value=moonToEarth.dot(lunarSunDirection.value)>.999?stellarVisibility(moon.center,sun,moon):1;
+    moonlight.intensity=0;
+    if(earthLighting&&skyFactor<.15&&!moon.destroyed){
+      observerToMoon.copy(moon.center).sub(pos);
+      const moonDistance=observerToMoon.length();
+      observerToMoon.divideScalar(moonDistance);
+      const moonHeight=lightingUp.dot(observerToMoon);
+      const moonAngle=lightingModel.horizonAngle(moonHeight,distSurf,earth.r);
+      const lunarLight=lightingModel.lunarIrradiance(-observerToMoon.dot(lunarSunDirection.value),
+        moonAngle,moonDistance/moon.orbit.R,skyFactor,lunarEclipse.value);
+      const air=lightingModel.earthAirColumn(moonHeight,bodyAltitude*metersPerUnit,earth.r*metersPerUnit);
+      moonlight.color.setRGB(.92,.94*Math.exp(-air*.017),Math.exp(-air*.042));
+      moonlight.position.copy(observerToMoon);
+      // Artistic night adaptation keeps the landscape just visible in
+      // moonlight. The shoulder beam still supplies navigation light.
+      moonlight.intensity=.055*lunarLight*immersion*Math.exp(-air*.022);
+    }
+    moonlight.visible=moonlight.intensity>.0001;
+    let groundAlbedo=null;
+    if(earthLighting&&skyFactor>.001){
+      lightingPlanetInverse.copy(earth.mesh.quaternion).invert();
+      lightingGroundDirection.copy(lightingUp).applyQuaternion(lightingPlanetInverse);
+      if(earthAlbedoLocal(lightingGroundDirection,lightingGroundAlbedo))groundAlbedo=lightingGroundAlbedo;
+    }
     physicalLighting.update({dt:dt,star:illuminationStar,distance:starDistance,au:AU,
       twilight:twilight,skyTint:skyProfile?skyProfile.tint:0xa9d2ff,
-      skyFactor:skyFactor,surface:!nearestP.isStar&&distSurf<nearestP.r*.08,nearAtmosphere:nearAtmosphere?1:0,sunHeight:sunHeight,directDay:directDay,eclipse:eclipseVisibility});
+      earth:earthHorizon,altitude:bodyAltitude*metersPerUnit,planetRadius:nearestP.r*metersPerUnit,groundAlbedo,
+      skyFactor:skyFactor,surface:earthHorizon||!nearestP.isStar&&distSurf<nearestP.r*.08,nearAtmosphere:nearAtmosphere?1:0,sunHeight:sunHeight,directDay:directDay,eclipse:eclipseVisibility});
     characterLightTarget.position.copy(smoothUp).multiplyScalar(1.1);
-    characterKey.position.copy(characterLightTarget.position).addScaledVector(tmpV,12);
+    characterKey.position.copy(characterLightTarget.position).addScaledVector(lightingSun,12);
     characterKey.castShadow=adaptiveQuality.userMax>=1.5&&characterKey.intensity>.02;
 
     // ---- Camera ----
@@ -5775,7 +6345,13 @@
     const cameraSpeed=grounded?groundSpeedNow+landingSlide.length():
       (localFlight&&nearestP!==airCarry?tmpV2.copy(vel).sub(nearestP.velNow).length():vel.length());
     const speedFov=grounded?Math.min(4,cameraSpeed*.12):Math.min(16,Math.log10(cameraSpeed+1)*3.2);
-    const targetFov=60+speedFov+(thrusting?2.5:0)-(charging?2:0);
+    const eventFraming=earthEventAim&&earthEvent&&!overview;
+    if(earthEvent){
+      const viewAction=eventFraming?'Ground view':'Sky view';
+      if(eventViewLabel.textContent!==viewAction)eventViewLabel.textContent=viewAction;
+    }
+    crosshair.style.display=overview||eventFraming?'none':'block';
+    const targetFov=eventFraming&&earthEvent.id!=='sunset'?8:60+speedFov+(thrusting?2.5:0)-(charging?2:0);
     const nextFov=damp(camera.fov,targetFov,5,dt);
     if(Math.abs(nextFov-camera.fov)>.015){camera.fov=nextFov;camera.updateProjectionMatrix();}
     terrainCameraOffset=damp(terrainCameraOffset,0,9,dt);
@@ -5838,7 +6414,10 @@
         }
       }
       camera.up.copy(smoothUp);
-      camera.lookAt(lookTarget);
+      if(eventFraming){
+        const subject=earthEvent.lunarOffset!==undefined||earthEvent.crescentOffset!==undefined?moon:sun;
+        camera.lookAt(earthEventAimPoint.copy(subject.center).sub(pos));
+      }else camera.lookAt(lookTarget);
     }
     // C-view used to leave camDir at the last third-person orientation. The
     // black-hole visibility test then believed the hole was behind the camera
@@ -5917,6 +6496,18 @@
     // ---- Floating origin ----
     for (const ro of renderObjs) ro.o.position.copy(ro.w).sub(pos);
     const camW = tmpV3.copy(camera.position).add(pos);
+    lunarDiskWeight.value=THREE.MathUtils.smoothstep(camW.distanceToSquared(moon.center)/(moon.r*moon.r),9,36);
+    lunarTransmission.value=1;
+    if(earthHorizon&&skyProfile&&earthEvent?.solarOffset===undefined){
+      lightingGroundDirection.copy(camW).sub(earth.center);
+      const cameraAltitude=Math.max(0,lightingGroundDirection.length()-earth.r)*metersPerUnit;
+      if(cameraAltitude<skyProfile.top){
+        observerToMoon.copy(moon.center).sub(camW).normalize();
+        const moonHeight=lightingGroundDirection.normalize().dot(observerToMoon);
+        const air=lightingModel.earthAirColumn(moonHeight,cameraAltitude,earth.r*metersPerUnit);
+        lunarTransmission.value=Math.exp(-air*.018)*(1-.42*skyFactor);
+      }
+    }
     updateEarthGlobe(camW);
     scheduleVisibleRelief(camW,elapsed);
     player.visible=!overview||overviewDist<2500;
@@ -5934,12 +6525,14 @@
     }
     const skyStar=overview?nearestStarTo(camW):illuminationStar;
     const skyEclipse=overview?stellarVisibility(camW,skyStar,skyBody):eclipseVisibility;
-    const viewSky=planetarySky.update(camera,skyBody,pos,skyStar,elapsed,skyEclipse,AU);
-    if(fullScaleTerrain){
-      earthFlightGroundStrength.value=skyBody===earth?1-THREE.MathUtils.smoothstep(viewSky.altitude,12000,28000):0;
-      const showOrbits=!universeAnnotationsHidden&&viewSky.immersion<.72;
-      for(const guide of orbitGuides)guide.visible=showOrbits;
-    }
+    const viewSky=planetarySky.update(camera,skyBody,pos,skyStar,elapsed,Math.max(.028,skyEclipse),AU);
+    solarCorona.visible=skyBody===earth&&skyStar===sun&&skyEclipse<.065;
+    solarCorona.material.opacity=1-THREE.MathUtils.smoothstep(skyEclipse,.012,.065);
+    const clearEventView=eventFraming&&earthEvent.id!=='sunset'&&skyBody===earth;
+    if(clearEventView)for(const layer of planetarySky.layers)layer.visible=false;
+    if(fullScaleTerrain)earthFlightGroundStrength.value=skyBody===earth?1-THREE.MathUtils.smoothstep(viewSky.altitude,12000,28000):0;
+    const showOrbits=!universeAnnotationsHidden&&!clearEventView&&(!fullScaleTerrain||viewSky.immersion<.72);
+    for(const guide of orbitGuides)guide.visible=showOrbits;
     const viewProfile=planetarySky.profile;
     const fogHeight=viewProfile?worldMeters(viewProfile.scale)*.6:0;
     surfaceAtmosphere.update({
@@ -5956,8 +6549,9 @@
       atmoMat.uniforms.starVisibility.value=skyEclipse;
     }
     lastAtmoMat=atmoMat;
-    const skyTarget=viewSky.starVisibility;
-    deepSkyVisibility=overview||overview!==previousOverview?skyTarget:
+    const solarViewing=skyBody===earth&&earthEvent?.solarOffset!==undefined;
+    const skyTarget=solarViewing?Math.min(viewSky.starVisibility,skyEclipse<.01?.16:.035):viewSky.starVisibility;
+    deepSkyVisibility=overview||overview!==previousOverview||solarViewing?skyTarget:
       damp(deepSkyVisibility,skyTarget,skyTarget>deepSkyVisibility?.7:5,dt);
     previousOverview=overview;
     for(const m of starMats){
@@ -6004,7 +6598,7 @@
       // Finder makes distant objects discoverable; labels are kept for nearby
       // bodies and the active target so the sky stays clean and cheap to draw.
       const standingOnBody=l.body&&camW.distanceTo(l.body.center)<l.r*1.08;
-      const visible = !universeAnnotationsHidden&&!standingOnBody&&
+      const visible = !universeAnnotationsHidden&&!clearEventView&&!standingOnBody&&
         ((target && l.body === target) || dist < l.r * 2500);
       if (visible) ensureBodyLabel(l);
       if (!l.spr) continue;
@@ -6017,7 +6611,9 @@
       const dist = g.w.distanceTo(camW);
       let s = Math.max(g.base, dist * 0.014);
       if (g.pulse && dist < g.base * 6) s *= 1 + Math.sin(elapsed * 1.3) * 0.06;
-      g.spr.material.opacity=g.body===illuminationStar?1:deepSkyVisibility;
+      const solarPreview=earthEvent?.solarOffset!==undefined&&g.body===sun;
+      g.spr.material.opacity=solarPreview?0:
+        g.body===illuminationStar?1:deepSkyVisibility;
       g.spr.scale.set(s, s, 1);
     }
 
@@ -6063,7 +6659,7 @@
     for(const layer of starLayers)layer.visible=deepSkyVisibility>.002;
     const panoramaVisible=deepSkyRenderer.update(elapsed,pos,camera,deepSkyVisibility,renderer.getDrawingBufferSize(deepSkyViewport));
     if(milkyWayCredit.hidden===panoramaVisible)milkyWayCredit.hidden=!panoramaVisible;
-    if(earth.cloudMesh&&skyBody===earth&&planetarySky.layers.some(layer=>layer.visible))earth.cloudMesh.visible=false;
+    if(earth.cloudMesh&&skyBody===earth&&(clearEventView||planetarySky.layers.some(layer=>layer.visible)))earth.cloudMesh.visible=false;
     if(earth.nightMesh&&skyBody===earth&&viewSky.altitude<worldSize(2500))earth.nightMesh.visible=false;
     earthTileRotation.makeRotationFromQuaternion(earth.mesh.quaternion).invert();
     earthTilePlanetInverse.value.setFromMatrix4(earthTileRotation);
