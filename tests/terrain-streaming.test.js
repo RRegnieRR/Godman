@@ -11,7 +11,7 @@ function fixture(code,worldFactor=1){
   let builds=0;
   const context={window:global,stitchEarthSurfaceTiles(){},THREE:T,worldFactor,earth,earthSurfaceTiles:tiles,earthElevation:{ready:true},pos:new T.Vector3(-earth.r,0,0).applyAxisAngle(new T.Vector3(0,1,0),.0004),earthTileQ:new T.Quaternion(),earthTileN:new T.Vector3(),earthSurfaceCutaway:{center:{value:new T.Vector3()},chordSq:{value:-1},detail:{value:1}},performance:{now:()=>0},
     earthDetailRoot:earth.mesh,fullScaleTerrain,worldMeters:m=>m*worldFactor/10,
-    earthHydrographyLoading:false,earthWaterLevelLocal:()=>null,earthCoastDistance:()=>Infinity,
+    earthHydrographyLoading:false,earthSurfaceMapsPending:0,earthWaterLevelLocal:()=>null,earthCoastDistance:()=>Infinity,
     sampleEarthInlandWater:()=>({kind:0}),earthFineReliefLocal:()=>0,sampleEarthElevationRaster:()=>fullScaleTerrain?8849:0,
     *createEarthSurfaceTile(...args){yield;return context.buildEarthSurfaceTile(...args);},
     buildEarthSurfaceTile(ix,iy,lonCells,latCells,lod){
@@ -20,7 +20,17 @@ function fixture(code,worldFactor=1){
   vm.createContext(context);vm.runInContext(code.slice(code.indexOf('  function updateEarthCutaway('),code.indexOf('\n  function horizDir()',code.indexOf('  function updateEarthCutaway('))),context);
   return {context,tiles,earth,tick:(...args)=>context.updateEarthSurfaceTiles(...args),builds:()=>builds};
 }
+for(const scale of [1,10]){
+ const startup=fixture(source,scale);
+ startup.context.earthSurfaceMapsPending=1;
+ for(let i=0;i<30;i++)startup.tick(0,8,null,true);
+ assert.equal(startup.builds(),0,'Terrain used provisional materials before the coast map settled');
+ startup.context.earthSurfaceMapsPending=0;
+ for(let i=0;i<30;i++)startup.tick(0,8,null,true);
+ assert.ok(startup.tiles.committedKeys.size>0,'The ready maps did not unlock the landing area');
+}
 const r=fixture(source);
+for(let i=0;i<160;i++)r.tick();
 function settle(){let frames=0;do{r.tick();assert.ok(++frames<300,'Terrain never committed');}while(r.tiles.committedSignature!==r.tiles.pendingSignature);}
 function checkCutawayCoverage(r){
  const cap=r.context.earthSurfaceCutaway;
@@ -191,17 +201,20 @@ for(const scale of [1,10]){
  let ready=false;
  for(let i=0;i<40&&!ready;i++)ready=start.tick(0,8,null,true);
  assert.ok(ready,'Startup waited for the full terrain range');
- assert.equal(start.tiles.committedGrid.radius,1);
+ assert.equal(start.tiles.committedGrid.radius,2);
  const landing=start.tiles.committedKeys;
- start.tick();
- assert.equal(start.tiles.committedKeys,landing,'The first refinement removed startup terrain');
+ for(let i=0;i<8&&start.tiles.committedKeys===landing;i++)start.tick();
+ assert.equal(start.tiles.committedGrid.radius,2,'Outer expansion delayed the contact tile');
+ assert.equal([...landing].filter(key=>!start.tiles.committedKeys.has(key)).length,1,'The first refinement changed more than the contact tile');
+ assert.ok([...start.tiles.committedKeys].some(key=>key.endsWith(scale===10?':1':':0')));
+
  checkCutawayCoverage(start);
  const expanded=new Set();
  for(let i=0;i<160;i++){
   start.tick();
   expanded.add(start.tiles.committedGrid.radius);
  }
- assert.ok(expanded.has(2),'Startup submitted the entire terrain range in one commit');
+ assert.ok(expanded.has(3),'Startup never widened the initial terrain ring');
  assert.equal(start.tiles.committedGrid.radius,start.tiles.activeRadius,'Startup never reached the configured terrain range');
 }
 // An eclipse can prepare a distant ground view while the menu holds the current frame.

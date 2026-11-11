@@ -9,7 +9,7 @@ const context=vm.createContext({
   gamePaused:()=>context.paused,paused:true,overview:false,earthEventsOpen:false,
   prepareEarthEventTerrain:()=>{context.prepared++;},prepared:0,
   earthEventAim:true,camDistTarget:8,overviewZoomTarget:400,
-  worldSize:distance=>distance,loaderHidden:true,redrawPausedScene:false,
+  worldSize:distance=>distance,loaderHidden:true,earthLoadFailed:false,redrawPausedScene:false,
   clock:{getDelta:()=>.016},elapsed:0,profileEnabled:false,
   requestAnimationFrame:()=>{},scene:{},camera:{},
   renderer:{render:()=>{context.rendered++;}},rendered:0

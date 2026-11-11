@@ -57,6 +57,36 @@
     // Squared chord distance keeps a small cap distinct from zero on the GPU.
     return radius>0?4*Math.sin(radius*.5)**2:-1;
   }
+  function ruggednessField(data,width,height,columns,rows,maxElevation){
+    const minRows=new Uint8Array(height*columns),maxRows=new Uint8Array(height*columns);
+    const taps=new Int32Array(columns*9);
+    for(let x=0;x<columns;x++){
+      const source=Math.floor(x/columns*width);
+      for(let i=0;i<9;i++)taps[x*9+i]=((source+i-4)%width+width)%width;
+    }
+    for(let y=0;y<height;y++)for(let x=0;x<columns;x++){
+      let low=255,high=0;
+      for(let i=0;i<9;i++){
+        const value=data[y*width+taps[x*9+i]];
+        low=Math.min(low,value);high=Math.max(high,value);
+      }
+      minRows[y*columns+x]=low;maxRows[y*columns+x]=high;
+    }
+    const field=new Float32Array(columns*rows);
+    for(let y=0;y<rows;y++){
+      const source=Math.floor(y/(rows-1)*(height-1));
+      const first=Math.max(0,source-4),last=Math.min(height-1,source+4);
+      for(let x=0;x<columns;x++){
+        let low=255,high=0;
+        for(let j=first;j<=last;j++){
+          low=Math.min(low,minRows[j*columns+x]);
+          high=Math.max(high,maxRows[j*columns+x]);
+        }
+        field[y*columns+x]=(high-low)/255*maxElevation;
+      }
+    }
+    return field;
+  }
   function smoothHeight(before,a,b,after,t){
     // A shared, monotone tangent at every sample preserves the source
     // heights and removes the lighting crease at the raster cell boundary.
@@ -199,7 +229,8 @@
     }
     tileRadius(tile,u,v,direction){
       const N=tile.N,S=N-1,position=tile.mesh.geometry.attributes.position;
-      const i=Math.min(S-1,Math.floor(u*S)),j=Math.min(S-1,Math.floor(v*S)),a=j*N+i;
+      const i=Math.max(0,Math.min(S-1,Math.floor(u*S)));
+      const j=Math.max(0,Math.min(S-1,Math.floor(v*S))),a=j*N+i;
       const ray=this.contactRay;
       ray.origin.copy(tile.center).multiplyScalar(-tile.anchor).applyQuaternion(tile.qi);
       ray.direction.copy(direction).applyQuaternion(tile.qi);
@@ -238,13 +269,16 @@
       const key=steps.join(':'),geo=tile.mesh.geometry,S=tile.N-1,N=tile.N;
       if(tile.stitchKey===key&&!force)return;
       tile.stitchKey=key;tile.stitchSteps=steps.slice();
-      if(steps.every(step=>step===1)&&!tile.surfaceBase){this.refreshSkirt(tile);return;}
+      if(steps.every(step=>step===1)&&!tile.surfaceBase){
+        if(force)this.refreshSkirt(tile);
+        return;
+      }
       const names=['position','normal','color','earthGround','earthDirection','earthCoast','earthMeltStrength','earthMeltBirth'];
       const base=tile.surfaceBase||(tile.surfaceBase={});
       for(const name of names){
         const attr=geo.attributes[name];
         if(!base[name]||(force&&!['color','earthDirection','earthCoast'].includes(name)))base[name]=attr.array.slice();
-        attr.array.set(base[name]);
+        else attr.array.set(base[name]);
       }
       // Ease the fine surface into the neighbouring coarse shape over two
       // coarse cells. An edge-only fix closes a crack but leaves a visible
@@ -289,13 +323,12 @@
         const dst=e*2,p=surface.position,n=surface.normal,c=surface.color;
         // The cover follows the stitched edge too; unused fine vertices must
         // not leave a fence sticking up through a coarser neighbour.
-        const radial=tile.skirtRadials,i3=i*3;
+        const i3=i*3;
         const x=tile.localDirs[i3],y=tile.localDirs[i3+1],z=tile.localDirs[i3+2];
         this.a.set(x,y,z).applyQuaternion(tile.qi).normalize();
-        radial[e*3]=this.a.x;radial[e*3+1]=this.a.y;radial[e*3+2]=this.a.z;
         skirt.position.setXYZ(dst,p.getX(i),p.getY(i),p.getZ(i));
         skirt.position.setXYZ(dst+1,p.getX(i)-this.a.x*tile.skirtDepth,p.getY(i)-this.a.y*tile.skirtDepth,p.getZ(i)-this.a.z*tile.skirtDepth);
-        for(const k of [dst,dst+1]){
+        for(let k=dst;k<=dst+1;k++){
           skirt.normal.setXYZ(k,n.getX(i),n.getY(i),n.getZ(i));
           skirt.color.setXYZ(k,c.getX(i),c.getY(i),c.getZ(i));
           const ground=surface.earthGround;
@@ -317,6 +350,7 @@
   TerrainSurface.coastDistance=coastDistance;
   TerrainSurface.coastElevation=coastElevation;
   TerrainSurface.sampleHeight=sampleHeight;
+  TerrainSurface.ruggednessField=ruggednessField;
   TerrainSurface.globeSections=globeSections;
   TerrainSurface.buildRegionalPatch=buildRegionalPatch;
   TerrainSurface.RegionalTerrainBudget=RegionalTerrainBudget;

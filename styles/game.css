@@ -21,6 +21,9 @@
     text-shadow: 0 1px 4px #000; z-index: 6;
     display: none; pointer-events: none; white-space: nowrap;
   }
+  @media (max-width: 640px) {
+    #targetBanner { top: 93px; width: calc(100vw - 28px); white-space: normal; text-align: center; }
+  }
   #fuelWrap { position: fixed; bottom: 24px; left: 24px; width: 150px; z-index: 5; pointer-events: none; }
   #fuelLabel { color: var(--paper-dim); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; margin-bottom: 6px; text-shadow: 0 1px 4px #000; }
   #fuelOuter { height: 3px; border: 0; background: rgba(241,234,216,.16); }
@@ -59,7 +62,7 @@
     position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center;
     background: radial-gradient(ellipse at center, #101621 0%, #05070c 72%, #020305 100%);
-    color: #fff; transition: opacity .7s;
+    color: #fff; transition: opacity .3s;
   }
   #loader h1 { font-size: 27px; font-weight: 500; letter-spacing: 11px; margin: 0 0 30px; color: var(--paper); text-shadow: 0 0 18px rgba(235,197,145,.3); }
   #loadOuter {
@@ -70,6 +73,8 @@
     height: 100%; width: 0%;
     background: var(--paper); transition: width .25s;
   }
+  #loadRetry { margin-top: 15px; }
+  #loadRetry[hidden] { display: none; }
   #loadText { margin-top: 14px; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; color: var(--paper-dim); }
   #overlay {
     position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;

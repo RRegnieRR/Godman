@@ -640,7 +640,13 @@
           '#endif',
           // Low optical intensity keeps dense populations from becoming an
           // opaque flat silhouette while preserving their temperature colour.
-          '  vGalaxyAlpha=visibility*(.08+.22*h(71.0))*edgeFade*populationAlpha*densityCompensation;','}'
+          '  vGalaxyAlpha=visibility*(.08+.22*h(71.0))*edgeFade*populationAlpha*densityCompensation;',
+          '#ifdef MILKY_WAY',
+          '  float luminosity=pow(h(389.0),8.0);',
+          '  vGalaxyAlpha*=mix(1.15,3.4,luminosity);',
+          '  vGalaxyColor*=mix(1.25,2.8,luminosity);',
+          '#endif',
+          '}'
         ].join('\n'),
         fragmentShader:[
           '#include <common>','#include <logdepthbuf_pars_fragment>','uniform float brightness,saturation;varying vec3 vGalaxyColor;varying float vGalaxyAlpha;',
@@ -656,9 +662,10 @@
           'vec3 c=max(vec3(0.0),mix(vec3(l),vGalaxyColor,saturation));gl_FragColor=vec4(c*brightness,a);',
           '#include <tonemapping_fragment>','#include <encodings_fragment>','}'
         ].join('\n'),
-        // Alpha compositing preserves stellar temperature and dust colours.
-        // Additive accumulation drove dense regions toward colourless white.
-        transparent:true,depthWrite:false,depthTest:true,blending:THREE.NormalBlending
+        // Resolved Milky Way stars add light to the background. Even a
+        // heavily extinguished star cannot paint a dark dot over the disk.
+        transparent:true,depthWrite:false,depthTest:true,
+        blending:independentSeeds?THREE.AdditiveBlending:THREE.NormalBlending
       });
       const points=new THREE.Points(geometry,material);
       points.rotation.set(spec.rotationX||0,spec.rotationY||0,spec.rotationZ||0);
@@ -816,8 +823,8 @@
           }
           // Keep one stable set of resolved stars. Unresolved stellar light
           // belongs to the continuous volume and cannot flicker with GPU load.
-          const resolvedFade=1-.85*this.THREE.MathUtils.smoothstep(homeRadius,2.8,15);
-          entry.material.uniforms.visibility.value=visibility*.68*resolvedFade*(1-.72*photoMix);
+          const resolvedFade=1-.68*this.THREE.MathUtils.smoothstep(homeRadius,2.8,15);
+          entry.material.uniforms.visibility.value=visibility*.86*resolvedFade*(1-.82*photoMix);
           continue;
         }
         const distance=Math.max(entry.body.r*.02,cameraDistance);

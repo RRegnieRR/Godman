@@ -57,10 +57,13 @@ assert.equal(volume.material.depthTest, true);
 assert.equal(volume.material.depthWrite, false);
 assert.equal(volume.material.uniforms.diskMap.value.generateMipmaps, true);
 assert.equal(volume.material.uniforms.panoramaMix.value, 1);
+assert.equal(home.mesh.material.blending,THREE.AdditiveBlending,'Extinguished stars darken the background');
+const photoStarVisibility=home.mesh.material.uniforms.visibility.value;
 assert.equal(panoramaRequests, 1);
 sky.update(2, new THREE.Vector3(100, 760, 300), camera, 1, viewport);
 assert.ok(volume.material.uniforms.panoramaMix.value > 0 && volume.material.uniforms.panoramaMix.value < 1,
   'The Solar System panorama did not blend into the volume during travel');
+assert.ok(home.mesh.material.uniforms.visibility.value>photoStarVisibility,'Live stars did not brighten as the photo receded');
 
 sky.update(3, eye, camera, 0, viewport);
 assert.equal(home.mesh.visible, false, 'The galaxy remained visible through a bright atmosphere');

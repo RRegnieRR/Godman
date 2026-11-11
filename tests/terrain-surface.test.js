@@ -22,6 +22,19 @@ function buildVisibleTile(...args){
  return result.value;
 }
 const lonCells=Math.ceil(2*Math.PI*earth.r/480),latCells=Math.ceil(Math.PI*earth.r/480);
+const rasterWidth=32,rasterHeight=20,columns=11,rows=8;
+const testElevation=Uint8Array.from({length:rasterWidth*rasterHeight},(_,i)=>(i*113+i*i*7)%256);
+const rugged=GodmanTerrainSurface.ruggednessField(testElevation,rasterWidth,rasterHeight,columns,rows,6400);
+for(let y=0;y<rows;y++)for(let x=0;x<columns;x++){
+ const sx=Math.floor(x/columns*rasterWidth),sy=Math.floor(y/(rows-1)*(rasterHeight-1));
+ let low=255,high=0;
+ for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){
+  const column=(sx+dx+rasterWidth)%rasterWidth,row=Math.max(0,Math.min(rasterHeight-1,sy+dy));
+  const value=testElevation[row*rasterWidth+column];
+  low=Math.min(low,value);high=Math.max(high,value);
+ }
+ assert.equal(rugged[y*columns+x],Math.fround((high-low)/255*6400));
+}
 const coastPixels=new Uint8Array(8*4*4);
 for(let i=0;i<32;i++)if(i%8>=4)coastPixels.fill(255,i*4,i*4+3);
 const coast=GodmanTerrainSurface.coastField(coastPixels,8,4,earth.r);
@@ -36,13 +49,14 @@ assert.ok(elevation(-300)<.42&&elevation(300)>.42&&elevation(5000)===85,'The coa
 earth.mesh.material=new T.MeshStandardMaterial();
 context.earthRegionalAnchor={value:new T.Vector3()};
 context.earthFallbackEye={value:new T.Vector3()};
-context.earthFallbackBlend={value:new T.Vector2()};
+context.earthFallbackBlend={value:0};
 context.worldSize=size=>size;
 context.earthSurfaceCutaway={center:{value:new T.Vector3(1,0,0)},chordSq:{value:.02}};
 vm.runInContext(source.slice(source.indexOf('  function setEarthTerrainCoverage('),source.indexOf('  const EARTH_MOUNTAIN_SITES=')),context);
 const shader={uniforms:{},vertexShader:'#include <common>\n#include <begin_vertex>',
  fragmentShader:'#include <common>\n#include <clipping_planes_fragment>\n#include <logdepthbuf_fragment>'};
 earth.mesh.material.onBeforeCompile(shader);
+assert.equal(earth.mesh.material.side,T.DoubleSide,'Nearby fallback can leave the camera inside a front-face-only mesh');
 assert.equal(earth.mesh.material.stencilFunc,T.NotEqualStencilFunc,'The globe does not fill uncovered terrain pixels');
 assert.equal(earth.mesh.material.stencilZPass,T.KeepStencilOp,'The globe modified terrain coverage');
 for(const layer of ['detail','regional']){
@@ -68,7 +82,11 @@ for(const regional of [true,false]){
  assert.ok(flightShader.vertexShader.includes('varying vec3 vEarthSurfacePoint')&&
   flightShader.fragmentShader.includes('varying vec3 vEarthSurfacePoint'),'Fallback terrain position is missing from a shader stage');
  assert.ok(!flightShader.vertexShader.includes('modelMatrix'),'Flight texture phase moves with the render origin');
- assert.ok(!flightShader.fragmentShader.includes('discard'),'Fallback terrain can expose a gap even when finer meshes are missing');
+ assert.ok(flightShader.fragmentShader.includes('if(!gl_FrontFacing&&distance(vEarthSurfacePoint,earthFallbackEye)>9500.0)discard;'),
+  'Fallback terrain must cover nearby back faces without rendering the opposite side of the planet');
+ assert.equal(flightShader.uniforms.earthFallbackBlend,shader.uniforms.earthFallbackBlend);
+ assert.ok(flightShader.vertexShader.includes('smoothstep(4700.0,9500.0,'),'Fallback layers separated at their shared boundary');
+ assert.equal((flightShader.fragmentShader.match(/varying vec3 vEarthSurfacePoint/g)||[]).length,1);
  if(regional)assert.equal(flightShader.uniforms.earthRegionalAnchor,context.earthRegionalAnchor);
 }
 context.fullScaleTerrain=false;
@@ -154,6 +172,21 @@ const middle=(wideFine.N>>1)*wideFine.N+(wideFine.N>>1);
 const landingPoint=point(wideFine,middle);
 const landingRadius=landingSurface.tileRadius(wideFine,.5,.5,landingPoint.clone().normalize());
 assert.ok(Math.abs(landingRadius-landingPoint.length())<.001,'Ground collision missed the rendered landing surface');
+// Interior normals follow the actual mesh slope without resampling height.
+const widePosition=wideFine.mesh.geometry.attributes.position;
+const east=new T.Vector3().fromBufferAttribute(widePosition,middle+1)
+ .sub(new T.Vector3().fromBufferAttribute(widePosition,middle-1));
+const north=new T.Vector3().fromBufferAttribute(widePosition,middle+wideFine.N)
+ .sub(new T.Vector3().fromBufferAttribute(widePosition,middle-wideFine.N));
+const meshSlope=east.cross(north).normalize();
+assert.ok(meshSlope.distanceTo(new T.Vector3().fromBufferAttribute(wideFine.mesh.geometry.attributes.normal,middle))<1e-6);
+const seamStart=buildVisibleTile(0,4000,wideCols,wideRows,4);
+const seamEnd=buildVisibleTile(wideCols-1,4000,wideCols,wideRows,4);
+for(let row=0;row<seamStart.N;row++){
+ const west=row*seamStart.N,east=west+seamStart.N-1;
+ assert.deepEqual(Array.from(seamStart.localDirs.slice(west*3,west*3+3)),
+  Array.from(seamEnd.localDirs.slice(east*3,east*3+3)), 'Date-line vertices were sampled at different coordinates');
+}
 // Contact must use the currently rendered triangles at either world scale.
 const collisionStart=source.indexOf('  function earthSurfaceRadiusWorld(');
 vm.runInContext(source.slice(collisionStart,source.indexOf('  function earthAlbedoLocal(',collisionStart)),context);
@@ -169,6 +202,14 @@ for(const fullScale of [false,true]){
  assert.ok(Math.abs(context.earthSurfaceRadiusWorld(landingNormal,false)-landingRadius)<.001,
   'Ground contact used a different surface from the rendered terrain');
 }
+const contactSearchStart=source.indexOf('  function findSurfaceContact(');
+context.tmpV3=new T.Vector3();
+context.PLAYER_FEET=0;
+context.surfaceR=()=>100;
+vm.runInContext(source.slice(contactSearchStart,source.indexOf('  // true ground height',contactSearchStart)),context);
+const hit=context.findSurfaceContact({center:new T.Vector3()},new T.Vector3(12000,0,0),
+ new T.Vector3(-37,0,0),new T.Vector3());
+assert.ok(Math.abs(hit.x-100)<.01,'High-speed landing did not converge to the terrain');
 context.earthWaterLevelLocal=(n,coast,inland)=>inland.kind?(inland.bank<=0?inland.level/10:null):(coast<0?.42:null);
 for(let j=0;j<wideFine.N;j+=2){
  assert.ok(point(wideFine,j*wideFine.N+wideFine.N-1).distanceTo(point(wideCoarse,(j/2)*wideCoarse.N))<.0003,
@@ -255,7 +296,7 @@ const orbitFixture={
  overview:false,pos:new T.Vector3(104,0,0),earthCameraCutaway:{value:-1},
  worldSize:size=>size,
  THREE:T,fullScaleTerrain:false,sampleEarthElevationLocal:()=>8,
- earthFallbackEye:{value:new T.Vector3()},earthFallbackBlend:{value:new T.Vector2()},
+ earthFallbackEye:{value:new T.Vector3()},earthFallbackBlend:{value:0},
  earth:{r:100,center:new T.Vector3(),mesh:globeMesh},
  earthGlobe:{detail:globe,orbit:orbitGlobe,sections,maxRadius:100,view:new T.Vector3(),inverse:new T.Quaternion()},
  earthDetailRoot:new T.Group(),earthSurfaceCutaway:{chordSq:{value:.02}}
@@ -264,11 +305,11 @@ for(const section of sections)section.mesh=new T.Mesh(section.geometry);
 vm.createContext(orbitFixture);
 vm.runInContext(source.slice(source.indexOf('  function updateEarthGlobe('),source.indexOf('  function buildPermanentMountainPatches(')),orbitFixture);
 orbitFixture.updateEarthGlobe(new T.Vector3(104,0,0));
-assert.equal(orbitFixture.earthFallbackBlend.value.x,1,'Fallback terrain can sit above the camera');
+assert.equal(orbitFixture.earthFallbackBlend.value,1,'Fallback terrain can sit above the camera');
 assert.equal(globeMesh.layers.mask,0,'Near view submitted the entire globe as well as its sectors');
 assert.ok(sections.some(s=>s.mesh.visible)&&sections.some(s=>!s.mesh.visible),'Ground view failed to select the visible sectors');
 orbitFixture.updateEarthGlobe(new T.Vector3(1200,0,0));
-assert.equal(orbitFixture.earthFallbackBlend.value.lengthSq(),0,'Orbital view warped the globe');
+assert.equal(orbitFixture.earthFallbackBlend.value,0,'Orbital view warped the globe');
 assert.equal(globeMesh.geometry,orbitGlobe);
 assert.ok(!orbitFixture.earthDetailRoot.visible&&sections.every(s=>!s.mesh.visible));
 orbitFixture.updateEarthGlobe(new T.Vector3(104,0,0));

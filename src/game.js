@@ -9,19 +9,30 @@
   const loaderEl = document.getElementById('loader');
   const loadBar = document.getElementById('loadBar');
   const loadText = document.getElementById('loadText');
-  const loadStart = Date.now();
-  let loaderHidden = false;
-  function hideLoader() {
-    if (loaderHidden) return;
-    loaderHidden = true;
-    loadBar.style.width = '100%';
-    const wait = Math.max(0, 1000 - (Date.now() - loadStart));
-    setTimeout(() => {
-      loaderEl.style.opacity = 0;
-      setTimeout(() => { loaderEl.style.display = 'none'; }, 800);
-    }, wait);
+  const loadRetry=document.getElementById('loadRetry');
+  let loaderHidden=false,earthLoadFailed=false;
+  loadRetry.addEventListener('click',()=>location.reload());
+  setTimeout(()=>{
+    if(loaderHidden||earthLoadFailed)return;
+    loadText.textContent='Still preparing Earth’s terrain…';
+    loadRetry.hidden=false;
+  },8000);
+  function hideLoader(){
+    if(loaderHidden)return;
+    loaderHidden=true;
+    loadRetry.hidden=true;
+    loadBar.style.width='100%';
+    loaderEl.style.opacity=0;
+    setTimeout(()=>{
+      loaderEl.style.display='none';
+      document.getElementById('overlay').inert=false;
+    },350);
   }
-  setTimeout(hideLoader, 15000); // failsafe: never trap the player on the loader
+  function failEarthLoad(){
+    earthLoadFailed=true;
+    loadText.textContent='Earth’s elevation data could not load.';
+    loadRetry.hidden=false;
+  }
 
   const CONFIG=window.GODMAN_CONFIG;
   const scaleControl=document.getElementById('setWorldScale');
@@ -933,7 +944,7 @@
   // M87/EHT measurements and stellar-orbit estimates put Sgr A* near
   // 4.3 million solar masses: Schwarzschild radius ~= 12.7 million km.
   // Catalog radii are authored at 1:10 and converted by addPlanet.
-  const blackhole = addPlanet({ name: 'Sagittarius A*', r: 1.27e9, g: 3.54e6,
+  const blackhole = addPlanet({ name: 'Sagittarius A*', r: 1.27e9, g: worldMeters(3.54e6),
     center: V3(0.45, -0.2, 0.87).normalize().multiplyScalar(26670 * LYS),
     tex: canvasTex((x, w, h) => { x.fillStyle = '#000'; x.fillRect(0, 0, w, h); }, 64, 32),
     emissive: true });
@@ -941,9 +952,8 @@
   blackhole.searchAliases=['black hole','blackhole','Sgr A*','Sgr A','event horizon','galactic center'];
   stars.push(blackhole); // its gravity joins the stellar fallback field
   (function buildBlackhole() {
-    // The visible image is computed every frame by tracing null rays through a
-    // Kerr-aware strong-field approximation in event-horizon units. This is a
-    // live simulation, not a texture or pre-rendered black-hole photograph.
+    // Trace Schwarzschild null rays in units of the horizon radius.
+    // The optical metric is non-rotating; the emitting gas still orbits.
     blackhole.mesh.material.visible = false;
     blackhole.diskBands = [];
     blackhole.diskNormalWorld = V3(0.18, 0.96, 0.22).normalize();
@@ -951,6 +961,7 @@
       uniforms: {
         time: { value: 0 },
         diskNormal: { value: V3(0, 1, 0) },
+        galacticPole: { value: V3(0, 1, 0) },
         sceneTexture: { value: null },
         sceneDepthTexture: { value: null },
         viewport: { value: new THREE.Vector2(1, 1) },
@@ -958,10 +969,7 @@
         observerDistanceRs: { value: 48 },
         tanHalfFov: { value: 0.577350269 },
         lensDepth: { value: 1 },
-        // Interstellar's final Gargantua imagery used a/M = 0.6.  This value
-        // keeps the recognizable lensed disk while retaining visible Kerr
-        // asymmetry and frame dragging.
-        spin: { value: 0.6 },
+        jetStrength: { value: 0 },
         traceSteps: { value: 112 }
       },
       vertexShader: [
@@ -975,7 +983,7 @@
         'precision highp float;',
         'varying vec2 vUv;',
         'uniform float time;',
-        'uniform vec3 diskNormal;',
+        'uniform vec3 diskNormal,galacticPole;',
         'uniform sampler2D sceneTexture;',
         'uniform sampler2D sceneDepthTexture;',
         'uniform vec2 viewport;',
@@ -983,7 +991,7 @@
         'uniform float observerDistanceRs;',
         'uniform float tanHalfFov;',
         'uniform float lensDepth;',
-        'uniform float spin;',
+        'uniform float jetStrength;',
         'uniform int traceSteps;',
         'const float PI = 3.141592653589793;',
         'float hash21(vec2 p){',
@@ -1020,58 +1028,43 @@
         // to the hole. Beyond 48 rs the remaining weak-field bend is folded
         // into the asymptotic direction, avoiding needless empty integration.
         '  vec2 impact=(vUv-0.5)*2.0*extent;',
-        '  float observerR=clamp(observerDistanceRs,1.001,48.0);',
-        '  vec3 p=vec3(0.0,0.0,observerR);',
-        '  vec3 ray=normalize(vec3(impact,-observerR));',
-        '  vec3 initialRay=ray;',
-        '  float localH=length(cross(p,ray));',
-        // Convert the local launch angle into the conserved impact parameter
-        // measured at infinity. Schwarzschild capture occurs below
-        // 3*sqrt(3)/2 rs, which is the observed shadow rather than the smaller
-        // coordinate event-horizon radius.
-        '  float observerLapse=sqrt(max(0.0001,1.0-1.0/observerR));',
-        '  float b=localH/max(observerLapse,0.01);',
+        '  float observerR=min(observerDistanceRs,48.0);',
+        '  float observerLapse=sqrt(max(0.0001,1.0-1.0/observerDistanceRs));',
+        '  vec3 initialRay=normalize(vec3(impact,-observerDistanceRs));',
+        // Conserved b=L/E from the static observer's orthonormal frame.
+        // Far rays start on the near-field plane with the same b and E=1.
+        '  float b=observerDistanceRs*length(initialRay.xy)/observerLapse;',
         '  float h2=b*b;',
+        '  vec3 p=vec3(impact*(1.0-observerR/observerDistanceRs),observerR);',
+        '  float r0=length(p);',
+        '  vec3 radial0=p/r0;',
+        '  vec3 tangent0=initialRay-radial0*dot(initialRay,radial0);',
+        '  float radialSpeed=-sqrt(max(0.0,1.0-h2/(r0*r0)*(1.0-1.0/r0)));',
+        '  vec3 ray=radial0*radialSpeed+tangent0*(b/(r0*max(length(tangent0),1e-8)));',
         '  vec3 n=normalize(diskNormal);',
-        // A Kerr shadow is displaced and compressed on its prograde side.
-        // The projected spin tangent selects that side continuously as the
-        // camera moves above, below, or around the equatorial plane.
-        '  vec2 projectedSpin=n.xy;',
-        '  vec2 spinTangent=length(projectedSpin)>.0001?normalize(vec2(-projectedSpin.y,projectedSpin.x)):vec2(1.0,0.0);',
-        '  float spinSide=dot(impact,spinTangent)/max(length(impact),.001);',
-        '  float inclination=sqrt(max(0.0,1.0-n.z*n.z));',
-        '  float criticalImpact=2.598076211-spin*.31*spinSide*inclination;',
+        '  const float criticalImpact=2.598076211353316;',
         '  float captureAA=max(0.006,0.65/max(viewport.y,1.0)/max(schwarzschildUv.y,1e-8));',
-        '  if(observerR>1.5 && b<criticalImpact-captureAA){',
-        '    gl_FragColor=vec4(0.0,0.0,0.0,1.0);',
-        '    return;',
-        '  }',
         '  float previousPlane=dot(p,n);',
-        '  float minRadius=1000.0;',
         '  float opacity=0.0;',
         '  vec3 radiance=vec3(0.0);',
         '  bool captured=false;',
         '  bool escaped=false;',
-        '  for(int i=0;i<132;i++){',
-        '    if(i>=traceSteps)break;',
-        '    float r=length(p); minRadius=min(minRadius,r);',
-        '    if(r<1.0){ captured=true; break; }',
-        // Adaptive midpoint integration of the Schwarzschild null-orbit
-        // equation. The former normalized Euler step bled angular momentum
-        // and visibly changed the shadow as the camera moved.
-        '    float ds=clamp((r-1.0)*0.052,0.006,1.35);',
-        '    vec3 accel0=-1.5*h2*p/max(pow(r,5.0),0.00001);',
-        '    vec3 midRay=ray+accel0*(0.5*ds);',
-        '    vec3 midP=p+midRay*(0.5*ds);',
-        '    float midR=length(midP);',
-        '    vec3 accelMid=-1.5*h2*midP/max(pow(midR,5.0),0.00001);',
-        // Leading gravitomagnetic term: the spin axis drags near-hole rays in
-        // the prograde direction.  The bounded term vanishes rapidly outside
-        // the strong-field region and keeps the mobile integrator stable.
-        '    vec3 frameDrag=spin*.088*h2*cross(n,midP)/max(pow(midR,5.0),0.0001);',
-        '    accelMid+=frameDrag;',
-        '    vec3 nextRay=ray+accelMid*ds;',
-        '    vec3 nextP=p+midRay*ds;',
+        '  int budget=abs(b-criticalImpact)<.055?172:traceSteps;',
+        '  for(int i=0;i<172;i++){',
+        '    if(i>=budget)break;',
+        '    float r=length(p);',
+        '    if(r<=1.0){captured=true;break;}',
+        // Kick-drift-kick preserves angular momentum because both kicks are
+        // radial. Use shorter steps near the unstable photon orbit.
+        '    float ds=clamp((r-1.2)*.17,.04,1.8);',
+        '    float r2=r*r;',
+        '    vec3 halfRay=ray-.75*h2*p*ds/(r2*r2*r);',
+        '    vec3 nextP=p+halfRay*ds;',
+        '    float nextR=max(length(nextP),.8);',
+        '    float nextR2=nextR*nextR;',
+        '    vec3 nextRay=halfRay-.75*h2*nextP*ds/(nextR2*nextR2*nextR);',
+        '    vec3 midRay=halfRay;',
+        '    float midR=length((p+nextP)*.5);',
         '    float nextPlane=dot(nextP,n);',
         // Gargantua's recognizable shape comes from an optically substantial,
         // geometrically thin disk.  Detect true ray/plane crossings so the
@@ -1087,16 +1080,17 @@
         '    float height=abs(dot(sampleP,n));',
         '    float scaleHeight=.018+rr*.0065;',
         '    float vertical=max(exp(-0.5*pow(height/scaleHeight,2.0)),crossed);',
-        // For a/M=.6 the prograde ISCO is about 1.9 Schwarzschild radii.  A
-        // soft outer taper avoids a hard artificial rim.
-        '    float radialWindow=smoothstep(1.72,2.02,rr)*(1.0-smoothstep(12.5,17.0,rr));',
+        // Stable circular orbits start at r=3 rs in Schwarzschild spacetime.
+        '    float radialWindow=smoothstep(3.0,3.35,rr)*(1.0-smoothstep(12.5,17.0,rr));',
         '    if(radialWindow>0.0001 && opacity<0.985){',
         '        vec3 radial=normalize(cylindrical);',
         '        vec3 tangent=normalize(cross(n,radial));',
-        '        float beta=clamp(1.0/(pow(max(rr*2.0,1.0),1.5)+spin),0.0,0.74);',
-        '        beta=max(beta,sqrt(0.5/max(rr-1.0,0.22))*.68);',
+        '        float beta=sqrt(0.5/(rr-1.0));',
         '        float gamma=1.0/sqrt(max(0.01,1.0-beta*beta));',
-        '        vec3 photonToObserver=normalize(-midRay);',
+        '        vec3 rayRadial=normalize(diskP);',
+        '        float rayRadialSpeed=dot(midRay,rayRadial);',
+        '        float lapse=sqrt(max(0.0001,1.0-1.0/length(diskP)));',
+        '        vec3 photonToObserver=normalize(-(rayRadial*rayRadialSpeed+lapse*(midRay-rayRadial*rayRadialSpeed)));',
         '        float doppler=1.0/(gamma*max(0.12,1.0-dot(tangent*beta,photonToObserver)));',
         '        float grav=sqrt(max(0.0,1.0-1.0/rr));',
         // Divide by the observer lapse as well as multiplying by the emitter
@@ -1104,7 +1098,8 @@
         '        float shift=clamp(grav*doppler/max(observerLapse,0.08),0.08,2.8);',
         '        float inflow=pow(3.0/max(rr,1.12),1.42);',
         '        float density=vertical*radialWindow*inflow;',
-        '        float angle=atan(radial.y,radial.x);',
+        '        vec3 diskX=normalize(cross(n,abs(n.y)>.9?vec3(1.,0.,0.):vec3(0.,1.,0.)));',
+        '        float angle=atan(dot(radial,cross(n,diskX)),dot(radial,diskX));',
         '        float phase=angle-time*0.18/pow(max(rr,1.0),1.5);',
         // Radial structure dominates real thin disks; weak azimuthal noise
         // breaks perfect rings without producing the old artificial spokes.
@@ -1113,17 +1108,30 @@
         '        float turbulence=.72+.19*broad+.09*filament;',
         '        density*=turbulence;',
         '        float restTemperature=clamp(pow(inflow,.29)*.74,.22,1.08);',
-        // Preserve real Doppler/gravitational colour shifts, but compress their
-        // intensity contrast as the film did so both sides remain readable.
-        '        float relativisticIntensity=mix(1.0,pow(shift,3.0),.42);',
-        '        vec3 emission=blackbody(restTemperature*mix(1.0,shift,.58))*density*relativisticIntensity;',
+        // Specific intensity follows I_nu / nu^3 along the ray.
+        '        float relativisticIntensity=pow(shift,3.0);',
+        '        vec3 emission=blackbody(restTemperature*shift)*density*relativisticIntensity;',
         '        float opticalPath=mix(ds*1.6,2.8,crossed);',
         '        float a=clamp(1.0-exp(-density*opticalPath),0.0,.88);',
         '        radiance+=(1.0-opacity)*emission*a*4.8;',
         '        opacity+=(1.0-opacity)*a;',
         '    }',
+        // Optional plasma emissivity outside the horizon, symmetric in
+        // the rest frame. Doppler beaming makes the approaching side brighter.
+        '    if(jetStrength>0.0&&midR>1.08&&opacity<.985){',
+        '      float z=dot(sampleP,n),height=abs(z);',
+        '      if(height>1.2&&height<15.0){',
+        '        float width=.22+.19*sqrt(height);',
+        '        float rho=length(sampleP-n*z)/width;',
+        '        float column=exp(-rho*rho*2.0)*smoothstep(1.2,2.1,height)*(1.0-smoothstep(9.0,15.0,height));',
+        '        float beta=.74; float mu=dot(n*sign(z),normalize(-midRay));',
+        '        float g=sqrt(1.0-1.0/midR)*sqrt(1.0-beta*beta)/max(.1,1.0-beta*mu)/observerLapse;',
+        '        float pulse=.75+.25*noise(vec2(height*.8-time*.32,rho));',
+        '        radiance+=(1.0-opacity)*vec3(.32,.55,1.0)*jetStrength*column*pulse*pow(clamp(g,.05,3.0),3.0)*ds/(1.0+height*.18);',
+        '      }',
+        '    }',
         '    p=nextP; ray=nextRay; previousPlane=nextPlane;',
-        '    if(i>28 && r>observerR*0.985 && dot(p,ray)>0.0){ escaped=true; break; }',
+        '    if(r>max(20.0,observerR*.72)&&dot(p,ray)>0.0){escaped=true;break;}',
         '  }',
         // Reproject the ray's escaped direction into the pre-rendered scene.
         // Unlike the former procedural replacement stars, this bends the
@@ -1137,22 +1145,24 @@
         '    vec2 finalSlope=ray.xy/max(0.03,-ray.z);',
         '    vec2 bend=finalSlope-initialSlope;',
         '    vec2 angularUv=vec2(bend.x/max(viewport.x/viewport.y,0.001),bend.y)/(2.0*max(tanHalfFov,0.001));',
-        '    vec2 lensedUv=screenUv-angularUv;',
-        '    lensedUv=clamp(lensedUv,0.0,1.0);',
-        '    float sourceDepth=texture2D(sceneDepthTexture,lensedUv).x;',
-        '    background=sourceDepth+0.00002<lensDepth?baseScene:texture2D(sceneTexture,lensedUv).rgb;',
+        '    vec2 lensedUv=screenUv+angularUv;',
+        // The camera capture has finite coverage. Off-screen rays get a
+        // dim galactic background rather than repeating the edge pixels.
+        '    float border=min(min(lensedUv.x,lensedUv.y),min(1.0-lensedUv.x,1.0-lensedUv.y));',
+        '    float available=smoothstep(0.0,.045,border)*(1.0-smoothstep(-.10,-.025,normalize(ray).z));',
+        '    float latitude=dot(normalize(ray),galacticPole);',
+        '    background=vec3(.008,.009,.012)+vec3(.022,.017,.012)*exp(-latitude*latitude*30.0);',
+        '    if(available>0.0){',
+        '      float sourceDepth=texture2D(sceneDepthTexture,lensedUv).x;',
+        '      if(sourceDepth+0.00002>=lensDepth)background=mix(background,texture2D(sceneTexture,lensedUv).rgb,available);',
+        '    }',
         '  }',
-        // The photon ring is not a luminous object. Only boost light that the
-        // ray actually collected from the flow while lingering near the
-        // critical curve; higher-order images come from repeated integration.
-        '  float photonPath=exp(-abs(b-criticalImpact)*46.0)*smoothstep(0.002,0.18,opacity);',
-        '  radiance*=1.0+photonPath*1.35;',
-        '  vec3 color=(vec3(1.0)-exp(-radiance))+(1.0-opacity)*background;',
-        '  float captureMask=1.0-smoothstep(criticalImpact-captureAA,criticalImpact+captureAA,b);',
-        '  color=mix(color,vec3(0.0),captureMask);',
-        '  float edgeAlpha=1.0-smoothstep(13.5,16.0,b);',
-        '  float physicalRegion=max(opacity,max(photonPath,captureMask));',
-        '  edgeAlpha=max(edgeAlpha,physicalRegion);',
+        // Only the background is captured. Foreground accretion and jet
+        // emission collected before the ray reaches the horizon remains.
+        '  float captureMask=observerDistanceRs<=1.5?1.0:1.0-smoothstep(criticalImpact-captureAA,criticalImpact+captureAA,b);',
+        '  if(captured)captureMask=1.0;',
+        '  vec3 color=(vec3(1.0)-exp(-radiance))+(1.0-opacity)*background*(1.0-captureMask);',
+        '  float edgeAlpha=max(1.0-smoothstep(15.0,18.0,b),max(opacity,captureMask));',
         '  if(edgeAlpha<0.01) discard;',
         '  gl_FragColor=vec4(clamp(color,0.0,1.0),clamp(edgeAlpha,0.0,1.0));',
         '}'
@@ -1580,10 +1590,10 @@
       earth.nightMat.uniforms.cityMap.value=texture;
     }
   }
-  function tryRealTexture(p, url, kind) {
+  function tryRealTexture(p, url, kind, onReady) {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = function () {
+    img.onload = async function () {
       try {
         const cw = Math.min(img.width >= 2048 ? 2048 : 1024, 2048);
         const c = document.createElement('canvas');
@@ -1635,29 +1645,23 @@
               // swimming and the close-range water surface.
               p._waterData = { d: new Uint8ClampedArray(id.data), w:c.width, h:c.height };
               const width=c.width,height=c.height;
-              earthHydrographyReady.then(()=>{
-                earthHydrography?.removeMappedLakes(p._waterData.d,width,height);
-                p.coast=window.GodmanTerrainSurface.coastField(p._waterData.d,width,height,p.r);
-                if(fullScaleTerrain){
-                  const coastPixels=new Uint8Array(width*height*4),coastalRange=worldSize(3000);
-                  for(let i=0;i<p.coast.distance.length;i++){
-                    coastPixels[i*4]=Math.round(127.5*(1+THREE.MathUtils.clamp(p.coast.distance[i]/coastalRange,-1,1)));
-                    coastPixels[i*4+3]=255;
-                  }
-                  const coastTexture=new THREE.DataTexture(coastPixels,width,height);
-                  coastTexture.wrapS=THREE.RepeatWrapping;
-                  coastTexture.minFilter=coastTexture.magFilter=THREE.LinearFilter;
-                  coastTexture.needsUpdate=true;
-                  earthCoastAtlas.value?.dispose();
-                  earthCoastAtlas.value=coastTexture;
-                  earthCoastAtlasReady.value=1;
+              await earthHydrographyReady;
+              earthHydrography?.removeMappedLakes(p._waterData.d,width,height);
+              p.coast=window.GodmanTerrainSurface.coastField(p._waterData.d,width,height,p.r);
+              if(fullScaleTerrain){
+                const coastPixels=new Uint8Array(width*height*4),coastalRange=worldSize(3000);
+                for(let i=0;i<p.coast.distance.length;i++){
+                  coastPixels[i*4]=Math.round(127.5*(1+THREE.MathUtils.clamp(p.coast.distance[i]/coastalRange,-1,1)));
+                  coastPixels[i*4+3]=255;
                 }
-                resetEarthSurfaceTiles();
-                if(earthRegional){
-                  earthRegional.task=null;
-                  earthRegional.key=earthRegional.pendingKey='';
-                }
-              });
+                const coastTexture=new THREE.DataTexture(coastPixels,width,height);
+                coastTexture.wrapS=THREE.RepeatWrapping;
+                coastTexture.minFilter=coastTexture.magFilter=THREE.LinearFilter;
+                coastTexture.needsUpdate=true;
+                earthCoastAtlas.value?.dispose();
+                earthCoastAtlas.value=coastTexture;
+                earthCoastAtlasReady.value=1;
+              }
             }
             for(let i=0;i<id.data.length;i+=4){ id.data[i]=255-id.data[i]; id.data[i+1]=255-id.data[i+1]; id.data[i+2]=255-id.data[i+2]; }
             x.putImageData(id,0,0);
@@ -1693,14 +1697,17 @@
           p.mesh.material.needsUpdate = true;
         }
       } catch (e) { /* keep procedural texture */ }
+      finally{onReady?.();}
     };
     img.onerror = function () {
       if (!img._retried && /^https?:/.test(url)) {
         img._retried = true;
         img.src = 'https://images.weserv.nl/?url=' + encodeURIComponent(url.replace('https://', ''));
-      } else if (!kind && p===earth && !earth.nightMesh) {
-        installEarthNight(nightLights(earth.tex.image));
+        return;
       }
+      try{
+        if(!kind&&p===earth&&!earth.nightMesh)installEarthNight(nightLights(earth.tex.image));
+      }finally{onReady?.();}
     };
     img.src = url;
   }
@@ -1712,8 +1719,12 @@
   // ocean roughness and independent translucent cloud cover. Relief comes
   // from the real displaced geometry; a planet-wide normal map sparkles when
   // viewed from walking distance, so Earth deliberately does not use one.
-  tryRealTexture(earth, 'assets/earth/earth_day_2048.jpg');
-  tryRealTexture(earth, 'assets/earth/earth_specular_2048.jpg', 'specular');
+  // Tiles bake land colours and shore heights. Resolve both inputs once
+  // before streaming so a late image cannot invalidate the visible ring.
+  let earthSurfaceMapsPending=2;
+  const earthSurfaceMapReady=()=>{earthSurfaceMapsPending--;};
+  tryRealTexture(earth,'assets/earth/earth_day_2048.jpg',undefined,earthSurfaceMapReady);
+  tryRealTexture(earth,'assets/earth/earth_specular_2048.jpg','specular',earthSurfaceMapReady);
   tryRealTexture(earth, 'assets/earth/earth_clouds_1024.png', 'cloudpng');
 
   // NASA global land elevation, encoded 0–6400 real metres.
@@ -1729,7 +1740,7 @@
   const earthCameraCutaway={value:-1};
   const earthRegionalAnchor={value:new THREE.Vector3()};
   const earthFallbackEye={value:new THREE.Vector3()};
-  const earthFallbackBlend={value:new THREE.Vector2()};
+  const earthFallbackBlend={value:0};
   const earthFlightGroundStrength={value:0};
   const earthCoastAtlas={value:null},earthCoastAtlasReady={value:0};
   // Refined terrain marks the pixels it actually draws. Lower-resolution
@@ -1745,16 +1756,16 @@
     if(regional)shader.uniforms.earthRegionalAnchor=earthRegionalAnchor;
     shader.uniforms.earthFallbackEye=earthFallbackEye;
     shader.uniforms.earthFallbackBlend=earthFallbackBlend;
-    const inner=worldSize(regional?450:4700),outer=worldSize(regional?1050:9500);
+    const inner=worldSize(4700),outer=worldSize(9500);
     shader.vertexShader=shader.vertexShader
       .replace('#include <common>',`#include <common>
         varying vec3 vEarthSurfacePoint;
         uniform vec3 earthFallbackEye;
-        uniform vec2 earthFallbackBlend;
+        uniform float earthFallbackBlend;
         ${regional?'uniform vec3 earthRegionalAnchor;':''}`)
       .replace('#include <begin_vertex>',`#include <begin_vertex>
         vEarthSurfacePoint=position${regional?'+earthRegionalAnchor':''};
-        float underTerrain=earthFallbackBlend.${regional?'y':'x'};
+        float underTerrain=earthFallbackBlend;
         if(underTerrain>0.){
           float radius=length(vEarthSurfacePoint);
           float reach=1.-smoothstep(${inner.toFixed(1)},${outer.toFixed(1)},distance(earthFallbackEye,vEarthSurfacePoint));
@@ -1763,6 +1774,17 @@
           transformed-=shift;
           vEarthSurfacePoint-=shift;
         }`);
+    // A camera can be inside a coarse triangle even when its collision
+    // surface is clear. Let the nearby underside fill uncovered pixels.
+    // Reject the far hemisphere so this does not fill the sky or craters.
+    shader.fragmentShader=shader.fragmentShader
+      .replace('#include <common>',`#include <common>
+        varying vec3 vEarthSurfacePoint;
+        uniform vec3 earthFallbackEye;`)
+      .replace('#include <clipping_planes_fragment>',`#include <clipping_planes_fragment>
+        if(!gl_FrontFacing&&distance(vEarthSurfacePoint,earthFallbackEye)>${outer.toFixed(1)})discard;`)
+      .replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
+        if(!gl_FrontFacing)normal=-normal;`);
     if(!fullScaleTerrain)return;
     shader.uniforms.earthGroundDetail=earthGroundDetail;
     shader.uniforms.earthTilePlanetInverse=earthTilePlanetInverse;
@@ -1772,7 +1794,6 @@
     shader.uniforms.earthCoastAtlasReady=earthCoastAtlasReady;
     shader.fragmentShader=shader.fragmentShader
       .replace('#include <common>',`#include <common>
-        varying vec3 vEarthSurfacePoint;
         uniform sampler2D earthGroundDetail;
         uniform sampler2D earthCoastAtlas;
         uniform mat3 earthTilePlanetInverse;
@@ -1807,8 +1828,9 @@
   }
   setEarthTerrainCoverage(earth.mesh.material,'globe');
   earth.mesh.renderOrder=-10;
+  earth.mesh.material.side=THREE.DoubleSide;
   earth.mesh.material.onBeforeCompile=shader=>configureEarthSurfaceShader(shader,false);
-  earth.mesh.material.customProgramCacheKey=()=> 'earth-globe-v7';
+  earth.mesh.material.customProgramCacheKey=()=> 'earth-globe-v8';
   earth.mesh.material.needsUpdate=true;
   const EARTH_MOUNTAIN_SITES=[
     {name:'Everest',file:'everest.png',mapLon:86.925,mapLat:27.764,baseLon:86.925,baseLat:27.54,peakLon:86.925,peakLat:27.9881,peakM:8848.86},
@@ -1958,7 +1980,8 @@
     const deformed=!!earth.craters?.length;
     const useOrbit=!deformed&&distance>earth.r*2.2;
     const useSections=!deformed&&!useOrbit;
-    earthFallbackBlend.value.set(0,0);
+    earthFallbackBlend.value=0;
+    earthFallbackEye.value.set(0,0,0);
     earth.mesh.geometry=useOrbit?earthGlobe.orbit:earthGlobe.detail;
     if(useSections)earth.mesh.layers.disable(0);
     else earth.mesh.layers.enable(0);
@@ -1978,10 +2001,10 @@
         const globeHeight=sampleEarthElevationLocal(radial);
         const regionalHeight=fullScaleTerrain?sampleEarthRegionalSurface(radial):globeHeight;
         earthFallbackEye.value.copy(radial).multiplyScalar(distance);
-        earthFallbackBlend.value.set(
-          THREE.MathUtils.smoothstep(globeHeight-altitude,-60,0),
-          THREE.MathUtils.smoothstep(regionalHeight-altitude,-60,0)
-        );
+        // The regional mesh and globe share border vertices. Moving each
+        // layer by a different amount opened gaps along their handoff.
+        earthFallbackBlend.value=THREE.MathUtils.smoothstep(
+          Math.max(globeHeight,regionalHeight)-altitude,-60,0);
       }
     }
     if(useSections){
@@ -2032,16 +2055,9 @@
       // Precompute a low-cost global relief mask from the full NASA raster.
       // It marks real mountain belts and escarpments, so walking-scale ridges
       // are added where the topography is genuinely rugged, not everywhere.
-      const rw=earthElevation.ruggedW,rh=earthElevation.ruggedH,src=earthElevation.data,sw=earthElevation.w,sh=earthElevation.h;
-      earthElevation.rugged=new Float32Array(rw*rh);
-      for(let y=0;y<rh;y++)for(let x=0;x<rw;x++){
-        const sx=Math.floor(x/rw*sw),sy=Math.floor(y/(rh-1)*(sh-1));let lo=255,hi=0;
-        for(let oy=-4;oy<=4;oy+=4)for(let ox=-4;ox<=4;ox+=4){
-          const xx=(sx+ox+sw)%sw,yy=Math.max(0,Math.min(sh-1,sy+oy)),v=src[yy*sw+xx];
-          lo=Math.min(lo,v);hi=Math.max(hi,v);
-        }
-        earthElevation.rugged[y*rw+x]=(hi-lo)/255*EARTH_ELEVATION_MAX;
-      }
+      earthElevation.rugged=window.GodmanTerrainSurface.ruggednessField(
+        earthElevation.data,earthElevation.w,earthElevation.h,
+        earthElevation.ruggedW,earthElevation.ruggedH,EARTH_ELEVATION_MAX);
       const gw=earthElevation.segW+1,gh=earthElevation.segH+1;
       earthElevation.grid=new Float32Array(gw*gh);
       const longitudes=Array.from({length:gw},(_,i)=>{
@@ -2079,7 +2095,7 @@
       earthElevation.data=elevationPixels(img,earthElevation.w,earthElevation.h);
       done();
     };
-    img.onerror=hideLoader;
+    img.onerror=failEarthLoad;
     img.src='assets/earth/earth_elevation_nasa_4096.png';
   })();
   tryRealTexture(moon, TXP + 'moonmap1k.jpg');
@@ -3079,9 +3095,18 @@
   let airCarry = null;   // the planet whose rotating frame we move in
   let lean = 0;
   let target = null;
-  let approachAssist = 0;
-  const approachTo=new THREE.Vector3(),approachDir=new THREE.Vector3();
-  const approachVelocity=new THREE.Vector3(),approachLateral=new THREE.Vector3();
+  const autopilot=new window.GodmanAutopilot(worldFactor);
+  const navOffset=new THREE.Vector3(),navFrame=new THREE.Vector3(),navVelocity=new THREE.Vector3();
+  const navRadial=new THREE.Vector3(),navDeparture=new THREE.Vector3(),navLateral=new THREE.Vector3();
+  const navRoute=new THREE.Vector3(),navObstacle=new THREE.Vector3();
+  let navTakeoff=false,navActive=false;
+  const giantWorlds=new Set([jupiter,saturn,uranus,neptune]);
+  function navigableTarget(body){
+    return !!body&&!body.catalogOnly&&!body.destroyed&&!!body.mesh;
+  }
+  function autoDepartureTarget(){
+    return !overview&&navigableTarget(target)&&target!==groundPlanet&&!keys.ShiftLeft&&!keys.ShiftRight;
+  }
   let finderOpen = false;
   let lastFire = -9;
   const asteroids = [];
@@ -3309,7 +3334,10 @@
       e.preventDefault();
       return;
     }
-    if (e.code === 'Space' && !e.repeat && grounded&&!flightDynamics.launchQueued) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
+    if(e.code==='Space'&&!e.repeat&&grounded&&!flightDynamics.launchQueued){
+      navTakeoff=autoDepartureTarget();
+      charging=true;charge=0;chargeStartedAt=performance.now();
+    }
     if (e.code === 'KeyR') { clearEarthEvent(); spawnOn(homePlanet()); }
     if (e.code === 'KeyT' && !e.repeat) toggleTarget();
     if (e.code === 'KeyC' && !e.repeat) toggleOverview();
@@ -3320,6 +3348,7 @@
   });
   addEventListener('keyup', e => {
     keys[e.code] = false;
+    if(e.code==='Space')navTakeoff=false;
     if (!gamePaused() && e.code === 'Space' && charging) {
       charge=Math.min(1,(performance.now()-chargeStartedAt)/(CHARGE_TIME*1000));
       if (grounded) doJump();
@@ -3651,7 +3680,7 @@
   function prepareEarthEventTerrain(){
     const site=eventViewingSite;
     if(!site||site.ready||performance.now()<site.startAfter)return;
-    if(!earthElevation.ready||earthHydrographyLoading)return;
+    if(!earthElevation.ready||earthHydrographyLoading||earthSurfaceMapsPending)return;
     if(!site.position){
       const inverse=earth.mesh.quaternion.clone().invert();
       const local=new THREE.Vector3();
@@ -3904,6 +3933,17 @@
     const quality=document.getElementById('setQuality'),stored=localStorage.getItem('godman_graphics_quality');
     if([...quality.options].some(option=>option.value===stored))quality.value=stored;
   }catch(error){}
+  const jetSetting=document.getElementById('setBlackHoleJets');
+  try{jetSetting.checked=localStorage.getItem('godman_black_hole_jets')==='true';}catch(error){}
+  function updateBlackHoleJets(){
+    blackhole.lensingMaterial.uniforms.jetStrength.value=jetSetting.checked?2.1:0;
+  }
+  updateBlackHoleJets();
+  jetSetting.addEventListener('change',()=>{
+    updateBlackHoleJets();
+    redrawPausedScene=true;
+    try{localStorage.setItem('godman_black_hole_jets',String(jetSetting.checked));}catch(error){}
+  });
   const _setMusic = document.getElementById('setMusic');
   if (_setMusic) _setMusic.addEventListener('change', e => {
     musicOn = e.target.checked;
@@ -4263,7 +4303,7 @@
       if(!regional.mesh){
         const material=earth.mesh.material.clone();
         material.onBeforeCompile=shader=>configureEarthSurfaceShader(shader,true);
-        material.customProgramCacheKey=()=> 'earth-regional-surface-v5';
+        material.customProgramCacheKey=()=> 'earth-regional-surface-v6';
         setEarthTerrainCoverage(material,'regional');
         regional.mesh=new THREE.Mesh(geometry,material);
         regional.mesh.renderOrder=-20;
@@ -4626,17 +4666,6 @@
         roughnessFactor=mix(roughnessFactor,.23,vEarthInlandWater);`);
   };
   earthWaterMat.customProgramCacheKey=()=> 'earth-water-inland-v3';
-  function resetEarthSurfaceTiles(){
-    for(const tile of earthSurfaceTiles.tiles.values()){
-      earthDetailRoot.remove(tile.group);
-      tile.group.traverse(o=>{if(o.geometry)o.geometry.dispose();});
-    }
-    earthSurfaceTiles.tiles.clear();
-    earthSurfaceTiles.tileTask=null;
-    earthSurfaceTiles.committedKeys.clear();earthSurfaceTiles.pendingKeys.clear();earthSurfaceTiles.pendingSignature=earthSurfaceTiles.committedSignature='';
-    earthSurfaceTiles.committedCells?.clear();
-    earthSurfaceCutaway.chordSq.value=-1;
-  }
   const terrainSurface=new window.GodmanTerrainSurface(THREE,earth.r,n=>{
     const base=sampleEarthElevationRaster(n);
     return earth.r+base+earthFineReliefLocal(n,base)+earthCraterDispLocal(n);
@@ -4647,7 +4676,7 @@
     const lonC=lon0+lonStep*.5,latC=lat0+latStep*.5,cl=Math.cos(latC),center=V3(-Math.cos(lonC)*cl,Math.sin(latC),Math.sin(lonC)*cl).normalize();
     const anchorBase=sampleEarthElevationRaster(center),anchor=earth.r+anchorBase+earthFineReliefLocal(center,anchorBase);
     const q=new THREE.Quaternion().setFromUnitVectors(V3(0,1,0),center),qi=q.clone().invert(),S=earthSurfaceTiles.lodSegments[lod],N=S+1;
-    const positions=new Float32Array(N*N*3),localDirs=new Float64Array(N*N*3),baseRadii=new Float64Array(N*N),normals=new Float32Array(N*N*3),meltStrengths=new Float32Array(N*N),meltBirths=new Float32Array(N*N),waterPositions=new Float32Array(N*N*3),waterDepths=new Float32Array(N*N),uvs=new Float32Array(N*N*2),colors=new Float32Array(N*N*3),indices=new (N*N>65535?Uint32Array:Uint16Array)(S*S*6),waterIndices=[];
+    const positions=new Float32Array(N*N*3),localDirs=new Float64Array(N*N*3),baseRadii=new Float64Array(N*N),normals=new Float32Array(N*N*3),meltStrengths=new Float32Array(N*N),meltBirths=new Float32Array(N*N),waterDepths=new Float32Array(N*N),uvs=new Float32Array(N*N*2),colors=new Float32Array(N*N*3),indices=new (N*N>65535?Uint32Array:Uint16Array)(S*S*6),waterIndices=[];
     const waterLevels=new Float32Array(N*N),inlandWater=new Float32Array(N*N);
     const groundCoords=new Float32Array(N*N*4);
     const coastalBiomes=new Float32Array(N*N*4);
@@ -4656,16 +4685,20 @@
     const dir=new THREE.Vector3(),point=new THREE.Vector3(),normal=new THREE.Vector3(),col=new THREE.Color();
     const longitudes=new Float64Array(N),cosLon=new Float64Array(N),sinLon=new Float64Array(N);
     for(let i=0;i<N;i++){
-      const lon=lon0+i/S*lonStep;
+      const column=ix+i/S;
+      const lon=column*lonStep,wrapped=column===lonCells?0:lon;
       longitudes[i]=lon;
-      cosLon[i]=-Math.cos(lon);
-      sinLon[i]=Math.sin(lon);
+      cosLon[i]=-Math.cos(wrapped);
+      sinLon[i]=Math.sin(wrapped);
     }
     for(let j=0;j<N;j++){
-      const lat=lat0+j/S*latStep,cosLat=Math.cos(lat),sinLat=Math.sin(lat);
+      const row=iy+j/S,lat=-Math.PI*.5+row*latStep;
+      const pole=row===0||row===latCells;
+      const cosLat=pole?0:Math.cos(lat),sinLat=pole?(row===0?-1:1):Math.sin(lat);
       for(let i=0;i<N;i++){
         const k=j*N+i;
-        dir.set(cosLon[i]*cosLat,sinLat,sinLon[i]*cosLat).normalize();
+        if(pole)dir.set(0,sinLat,0);
+        else dir.set(cosLon[i]*cosLat,sinLat,sinLon[i]*cosLat).normalize();
         const base=sampleEarthElevationRaster(dir),coast=earthCoastDistance(dir);
         const inland=sampleEarthInlandWater(dir),inlandKind=inland.kind;
         const surfaceLevel=earthWaterLevelLocal(dir,coast,inland);
@@ -4702,16 +4735,27 @@
         const melt=sampleEarthMeltLocal(dir);meltStrengths[k]=melt.strength;meltBirths[k]=melt.birth;
         point.copy(dir).multiplyScalar(rr).addScaledVector(center,-anchor).applyQuaternion(qi);
         positions[k*3]=point.x;positions[k*3+1]=point.y;positions[k*3+2]=point.z;
-        terrainSurface.normal(dir,rr,normal).applyQuaternion(qi);
-        normals[k*3]=normal.x;normals[k*3+1]=normal.y;normals[k*3+2]=normal.z;
-        point.copy(dir).multiplyScalar(earth.r+waterLevels[k]).addScaledVector(center,-anchor).applyQuaternion(qi);
-        waterPositions[k*3]=point.x;waterPositions[k*3+1]=point.y;waterPositions[k*3+2]=point.z;
+        // Shared edges sample the same continuous slope at every LOD.
+        // Interior normals will use the positions this tile already sampled.
+        if(i===0||i===S||j===0||j===S){
+          terrainSurface.normal(dir,rr,normal).applyQuaternion(qi).toArray(normals,k*3);
+        }
         waterDepths[k]=waterLevels[k]-(rr-earth.r);
         uvs[k*2]=longitudes[i]*earth.r;uvs[k*2+1]=lat*earth.r;
         if(water)col.setRGB(.018,.045,.055);else if(!earthAlbedoLocal(dir,col)){
           if(base<2)col.setRGB(.055,.11,.16);else if(base>500)col.setRGB(.48,.48,.45);else if(base>300)col.setRGB(.25,.24,.21);else if(base>150)col.setRGB(.17,.21,.14);else if(Math.abs(lat)>.85)col.setRGB(.24,.25,.21);else col.setRGB(.12,.23,.1);
         }
         colors[k*3]=col.r;colors[k*3+1]=col.g;colors[k*3+2]=col.b;
+      }
+      yield;
+    }
+    const east=new THREE.Vector3(),north=new THREE.Vector3();
+    for(let j=1;j<S;j++){
+      for(let i=1;i<S;i++){
+        const k=j*N+i;
+        east.fromArray(positions,(k+1)*3).sub(point.fromArray(positions,(k-1)*3));
+        north.fromArray(positions,(k+N)*3).sub(point.fromArray(positions,(k-N)*3));
+        normal.crossVectors(east,north).normalize().toArray(normals,k*3);
       }
       yield;
     }
@@ -4737,30 +4781,31 @@
     for(let j=1;j<=S;j++)perimeter.push(j*N+S);
     for(let i=S-1;i>=0;i--)perimeter.push(S*N+i);
     for(let j=S-1;j>0;j--)perimeter.push(j*N);
-    const skirtPositions=new Float32Array(perimeter.length*2*3),skirtColors=new Float32Array(perimeter.length*2*3),skirtMeltStrengths=new Float32Array(perimeter.length*2),skirtMeltBirths=new Float32Array(perimeter.length*2),skirtRadials=new Float32Array(perimeter.length*3),skirtIndices=[];
-    skirtMeltBirths.fill(-1000);
     const skirtDepth=fullScaleTerrain?earthSurfaceTiles.tileSize/S*.67:(lod===0?2.5:lod===1?5:lod===2?9:14);
-    const radialLocal=new THREE.Vector3();
+    const skirtGeo=new THREE.BufferGeometry();
+    const skirtVertices=perimeter.length*2,skirtIndices=new Uint16Array(perimeter.length*6);
     for(let e=0;e<perimeter.length;e++){
-      const vertex=perimeter[e],i=vertex%N,j=Math.floor(vertex/N),src=vertex*3,dst=e*6;
-      const lon=lon0+i/S*lonStep,lat=lat0+j/S*latStep,ct=Math.cos(lat);
-      radialLocal.set(-Math.cos(lon)*ct,Math.sin(lat),Math.sin(lon)*ct).applyQuaternion(qi).normalize();
-      skirtRadials[e*3]=radialLocal.x;skirtRadials[e*3+1]=radialLocal.y;skirtRadials[e*3+2]=radialLocal.z;
-      skirtPositions[dst]=positions[src];skirtPositions[dst+1]=positions[src+1];skirtPositions[dst+2]=positions[src+2];
-      skirtPositions[dst+3]=positions[src]-radialLocal.x*skirtDepth;skirtPositions[dst+4]=positions[src+1]-radialLocal.y*skirtDepth;skirtPositions[dst+5]=positions[src+2]-radialLocal.z*skirtDepth;
-      skirtColors[dst]=colors[src];skirtColors[dst+1]=colors[src+1];skirtColors[dst+2]=colors[src+2];
-      skirtColors[dst+3]=colors[src]*.9;skirtColors[dst+4]=colors[src+1]*.9;skirtColors[dst+5]=colors[src+2]*.9;
-      skirtMeltStrengths[e*2]=skirtMeltStrengths[e*2+1]=meltStrengths[vertex];
-      skirtMeltBirths[e*2]=skirtMeltBirths[e*2+1]=meltBirths[vertex];
-      const next=(e+1)%perimeter.length,a=e*2,b=a+1,c=next*2,d=c+1;skirtIndices.push(a,c,b,c,d,b);
+      const a=e*2,b=a+1,c=((e+1)%perimeter.length)*2,d=c+1,i=e*6;
+      skirtIndices[i]=a;skirtIndices[i+1]=c;skirtIndices[i+2]=b;
+      skirtIndices[i+3]=c;skirtIndices[i+4]=d;skirtIndices[i+5]=b;
     }
-    const skirtGeo=new THREE.BufferGeometry();skirtGeo.setAttribute('position',new THREE.BufferAttribute(skirtPositions,3));skirtGeo.setAttribute('color',new THREE.BufferAttribute(skirtColors,3));skirtGeo.setAttribute('earthMeltStrength',new THREE.BufferAttribute(skirtMeltStrengths,1));skirtGeo.setAttribute('earthMeltBirth',new THREE.BufferAttribute(skirtMeltBirths,1));skirtGeo.setIndex(skirtIndices);skirtGeo.computeVertexNormals();skirtGeo.computeBoundingSphere();
-    skirtGeo.setAttribute('earthGround',new THREE.BufferAttribute(new Float32Array(perimeter.length*2*4),4));
-    skirtGeo.setAttribute('earthDirection',new THREE.BufferAttribute(new Float32Array(perimeter.length*2*3),3));
-    skirtGeo.setAttribute('earthCoast',new THREE.BufferAttribute(new Float32Array(perimeter.length*2*4),4));
+    for(const name of ['position','normal','color','earthGround','earthDirection','earthCoast','earthMeltStrength','earthMeltBirth']){
+      const size=geo.attributes[name].itemSize;
+      skirtGeo.setAttribute(name,new THREE.BufferAttribute(new Float32Array(skirtVertices*size),size));
+    }
+    skirtGeo.setIndex(new THREE.BufferAttribute(skirtIndices,1));
     const skirtMesh=new THREE.Mesh(skirtGeo,earthTileMat);skirtMesh.receiveShadow=true;skirtMesh.renderOrder=-29;group.add(skirtMesh);
     let waterMesh=null;
     if(waterIndices.length){
+      const waterPositions=new Float32Array(positions.length);
+      for(let j=0;j<N;j++){
+        for(let i=0;i<N;i++){
+          const k=j*N+i;
+          point.fromArray(localDirs,k*3).multiplyScalar(earth.r+waterLevels[k])
+            .addScaledVector(center,-anchor).applyQuaternion(qi).toArray(waterPositions,k*3);
+        }
+        yield;
+      }
       const wg=new THREE.BufferGeometry();
       wg.setAttribute('position',new THREE.BufferAttribute(waterPositions,3));
       wg.setAttribute('uv',geo.attributes.uv);
@@ -4771,7 +4816,7 @@
       wg.setIndex(waterIndices);wg.computeVertexNormals();wg.computeBoundingSphere();
       waterMesh=new THREE.Mesh(wg,earthWaterMat);waterMesh.renderOrder=3;group.add(waterMesh);
     }
-    const tile={key,ix,iy,lonCells,latCells,lod,group,mesh,skirtMesh,waterMesh,waterLevels:waterMesh?waterLevels:null,lastUsed:earthSurfaceTiles.frame,center:center.clone(),anchor,qi:qi.clone(),N,localDirs,baseRadii,groundOrigin,perimeter,skirtRadials,skirtDepth};terrainSurface.refreshSkirt(tile);earthSurfaceTiles.tiles.set(key,tile);return tile;
+    const tile={key,ix,iy,lonCells,latCells,lod,group,mesh,skirtMesh,waterMesh,waterLevels:waterMesh?waterLevels:null,lastUsed:earthSurfaceTiles.frame,center:center.clone(),anchor,qi:qi.clone(),N,localDirs,baseRadii,groundOrigin,perimeter,skirtDepth};terrainSurface.refreshSkirt(tile);earthSurfaceTiles.tiles.set(key,tile);return tile;
   }
   const earthDeformDir=new THREE.Vector3(),earthDeformPoint=new THREE.Vector3(),earthDeformNormal=new THREE.Vector3();
   function refreshEarthTileDeformation(tile,cr){
@@ -4818,8 +4863,21 @@
     const x=longitude/(Math.PI*2)*lonCells;
     const y=Math.max(0,Math.min(latCells, (Math.asin(Math.max(-1,Math.min(1,direction.y)))+Math.PI*.5)/Math.PI*latCells));
     const ix=Math.min(lonCells-1,Math.floor(x)),iy=Math.min(latCells-1,Math.floor(y));
-    const tile=committedCells?.get(ix+':'+iy);
-    return tile?terrainSurface.tileRadius(tile,x-ix,y-iy,direction):null;
+    if(!committedCells)return null;
+    const tile=committedCells.get(ix+':'+iy);
+    const contact=tile?terrainSurface.tileRadius(tile,x-ix,y-iy,direction):null;
+    if(contact!==null)return contact;
+    // A stitched triangle can cross the angular cell boundary. Check the
+    // adjacent mesh before falling back to a different analytical height.
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      if(dx===0&&dy===0)continue;
+      const row=iy+dy,column=(ix+dx+lonCells)%lonCells;
+      const neighbour=committedCells.get(column+':'+row);
+      if(!neighbour)continue;
+      const hit=terrainSurface.tileRadius(neighbour,x-ix-dx,y-row,direction);
+      if(hit!==null)return hit;
+    }
+    return null;
   }
   function updateEarthCutaway(altitude,fastFlightBlend){
     // Keep the detailed ring cached above the transition so it is ready
@@ -4844,7 +4902,7 @@
     earthTileN.normalize().applyQuaternion(earthTileQ).normalize();
     // Use the analytical surface so the streaming height stays continuous
     // across shorelines and independent of which mesh is currently visible.
-    const terrainReady=!earth.destroyed&&earthElevation.ready&&!earthHydrographyLoading;
+    const terrainReady=!earth.destroyed&&earthElevation.ready&&!earthHydrographyLoading&&!earthSurfaceMapsPending;
     let altitude=seaAltitude;
     if(terrainReady&&seaAltitude<worldMeters(9500)+5000){
       const coast=earthCoastDistance(earthTileN),inland=sampleEarthInlandWater(earthTileN);
@@ -4898,17 +4956,18 @@
     // Give a new landing area a small usable surface while the wider ring
     // streams. At speed, keep this compact until walking detail is useful.
     const previousPlan=earthSurfaceTiles.committedSignature;
-    const compact=!!site||(!haveContactArea&&(fullScaleTerrain||landingFirst))||
+    const compact=!!site||!haveContactArea||
       (fullScaleTerrain&&fastFlightBlend>0&&previousPlan.endsWith(':contact'));
-    const landingDetail=fullScaleTerrain&&!compact&&(!flightLod||altitude<180&&flightSpeed<240)&&
-      (previousPlan.endsWith(':contact')||previousPlan.endsWith(':flight')||flightLod&&previousPlan.endsWith(':landing'));
+    const landingDetail=!compact&&(!flightLod||altitude<180&&flightSpeed<240)&&
+      (previousPlan.endsWith(':contact')||fullScaleTerrain&&
+        (previousPlan.endsWith(':flight')||flightLod&&previousPlan.endsWith(':landing')));
     const previousRadius=earthSurfaceTiles.committedGrid?.radius||1;
     // Expand a landing area one ring at a time. This spreads the first GPU
     // uploads across multiple commits while keeping the ground covered.
     const refining=haveContactArea&&!flightLod&&
       (previousPlan.endsWith(':contact')||previousPlan.endsWith(':landing')||previousPlan.endsWith(':viewing-site')||previousPlan.endsWith(':refine'));
     const fullRadius=earthSurfaceTiles.activeRadius;
-    const radius=compact||landingDetail&&previousRadius===1?1:
+    const radius=compact?(landingFirst?2:1):landingDetail?previousRadius:
       refining?Math.min(fullRadius,previousRadius+1):fullRadius;
     // Latitude/longitude cells narrow toward the poles. Expand the horizontal
     // ring there so the selected distance remains approximately circular.
@@ -4939,9 +4998,13 @@
         const ix=((cx+dx)%lonCells+lonCells)%lonCells,iy=Math.max(0,Math.min(latCells-1,cy+dy)),d=dx*dx+dy*dy;
         const ring=d<=(fullScaleTerrain?1:2)?0:(d<=12?1:(d<=36?2:3));
         let lod=fullScaleTerrain&&d>0?ring+1:ring;
-        if(landingDetail||flightLod)lod=landingDetail&&d===0?1:Math.max(3,ring+1);
+        if(flightLod)lod=Math.max(3,ring+1);
+        if(landingDetail){
+          lod=d===0?(fullScaleTerrain?1:0):
+            fullScaleTerrain&&previousPlan.endsWith(':contact')?4:Math.max(3,ring+1);
+        }
         if(site)lod=d===0?1:fullScaleTerrain?4:3;
-        else if(compact)lod=fullScaleTerrain?(d===0?3:4):(d===0?1:3);
+        else if(compact)lod=fullScaleTerrain?(d===0?3:4):(d===0?2:3);
         const cell=ix+':'+iy,old=requested.get(cell);
         if(!old||d<old.d)requested.set(cell,{ix,iy,lod,d});
       }
@@ -5068,8 +5131,10 @@
   function findSurfaceContact(p,a,b,out){
     // Binary-search the actual displaced surface along the travelled segment.
     // This removes the old early-landing snap and remains reliable at high speed.
+    const distance=a.distanceTo(b);
+    const iterations=Math.max(1,Math.min(24,Math.ceil(Math.log2(distance/.01))));
     let lo=0,hi=1;
-    for(let i=0;i<10;i++){
+    for(let i=0;i<iterations;i++){
       const t=(lo+hi)*.5;
       out.copy(a).lerp(b,t);
       const n=tmpV3.copy(out).sub(p.center),r=n.length();
@@ -5196,7 +5261,7 @@
     if (target) { target = null; banner.style.display = 'none'; return; }
     let best = null, bestAng = 0.45;
     for (const p of planets) {
-      if (grounded && p === groundPlanet) continue;
+      if (p.destroyed||grounded&&p===groundPlanet)continue;
       const dir = tmpV.copy(p.center).sub(pos).normalize();
       const ang = Math.acos(Math.max(-1, Math.min(1, dir.dot(camDir))));
       if (ang < bestAng) { bestAng = ang; best = p; }
@@ -5740,6 +5805,7 @@
   };
 
   function animate() {
+    if(earthLoadFailed)return;
     requestAnimationFrame(animate);
     const frameDt=clock.getDelta(),dt=Math.min(frameDt,0.05);
     if(loaderHidden&&gamePaused()){
@@ -5844,7 +5910,6 @@
     if (!domBody) {
       let bestG = -1;
       for (const s of stars) {
-        if (s.blackhole && pos.distanceTo(s.center) > s.r * 10) continue;
         const d = Math.max(pos.distanceTo(s.center), s.r * 0.6);
         const g = s.g * (s.r / d) * (s.r / d);
         if (g > bestG) { bestG = g; domBody = s; }
@@ -5900,8 +5965,16 @@
     const right = frameScratch.right.crossVectors(h, smoothUp).normalize();
     const mv = moveInput(h, right, frameScratch.move);
 
-    if (grounded && keys.Space && !charging&&!flightDynamics.launchQueued) { charging = true; charge = 0; chargeStartedAt=performance.now(); }
-    if (charging && grounded) charge=Math.min(1,(performance.now()-chargeStartedAt)/(CHARGE_TIME*1000));
+    navActive=false;
+    if(charging&&grounded){
+      const held=(performance.now()-chargeStartedAt)/1000;
+      charge=Math.min(1,held/CHARGE_TIME);
+      if(navTakeoff&&autoDepartureTarget()&&held>.42){
+        charge=Math.max(charge,.38);
+        doJump();
+        charging=false;charge=0;navTakeoff=false;
+      }
+    }
 
     if(grounded&&charging)mv.set(0,0,0);
     if(grounded&&flightDynamics.launchQueued){
@@ -5977,71 +6050,109 @@
       // Start blending toward cruise within the deeper full-scale atmosphere.
       const surface=1-THREE.MathUtils.smoothstep(Math.max(0,distSurf),
         realScaleFlight?18000:5000,realScaleFlight?90000:20000);
+      const guided=keys.Space&&!braking&&!overview&&navigableTarget(target)&&
+        flightDynamics.launchAge>=flightDynamics.launchDelay+flightDynamics.launchDuration;
+      if(guided){
+        navActive=true;
+        navOffset.copy(target.center).sub(pos);
+        const distance=navOffset.length();
+        navFrame.copy(target.velNow);
+        if(target===airCarry)navFrame.set(0,0,0);
+        else{
+          if(!target.isStar&&distance<target.r*3){
+            const spinBlend=1-THREE.MathUtils.smoothstep(distance/target.r,2.5,3);
+            navFrame.lerp(frameVel(target,pos,navVelocity),spinBlend);
+          }
+          if(airCarry)navFrame.sub(frameVel(airCarry,pos,navVelocity));
+        }
+        const landing=!(target.deadly||target.isStar||target.blackhole||giantWorlds.has(target)||target.props==='giant');
+        let arrivalRadius=target.r*(target.blackhole?24:landing?1:3.4);
+        if(landing){
+          // Resolve the actual ground in the arrival corridor. At range use a
+          // conservative radius so mountain peaks cannot surprise the brake.
+          const margin=target===earth?worldMeters(12000):target.r*.015;
+          const altitude=distance-target.r;
+          if(altitude<Math.max(margin*4,12000)){
+            const ground=surfaceR(target,navRadial.copy(navOffset).normalize().negate());
+            if(ground>0)arrivalRadius=ground;
+          }else arrivalRadius+=margin;
+          arrivalRadius+=PLAYER_FEET;
+        }
+        let departure=null;
+        if(nearestP!==target&&distSurf<Math.max(2000,nearestP.r*.75)){
+          navRadial.copy(pos).sub(nearestP.center).normalize();
+          const toward=navLateral.copy(navOffset).normalize();
+          const elevation=toward.dot(navRadial);
+          const exclusionRadius=nearestP.r+Math.min(nearestP.r*.08,worldMeters(30000));
+          const radius=pos.distanceTo(nearestP.center);
+          const horizon=-Math.sqrt(Math.max(0,1-(exclusionRadius/radius)**2));
+          if(elevation<horizon+.035){
+            // Follow a rising tangent until the direct route clears the limb.
+            navDeparture.copy(toward).addScaledVector(navRadial,-elevation);
+            if(navDeparture.lengthSq()<1e-8)navDeparture.copy(h).projectOnPlane(navRadial);
+            departure=navDeparture.normalize().addScaledVector(navRadial,
+              THREE.MathUtils.lerp(.9,.22,THREE.MathUtils.smoothstep(distSurf,60,worldMeters(30000)))).normalize();
+            navFrame.copy(frameVelocity);
+          }
+        }
+        if(!departure&&distance>1){
+          // Check the cruise corridor far enough ahead to go around bodies
+          // the fast path could otherwise cross in a single frame.
+          navRoute.copy(navOffset).divideScalar(distance);
+          let nearestBlock=distance;
+          for(const body of planets){
+            if(body===target||body.destroyed)continue;
+            navObstacle.copy(body.center).sub(pos);
+            const ahead=navObstacle.dot(navRoute),clearance=body.r*(body.blackhole?24:1.13);
+            if(ahead<=0||ahead>=nearestBlock||ahead>currentFlightSpeed*6+clearance*4)continue;
+            navObstacle.addScaledVector(navRoute,-ahead);
+            if(navObstacle.lengthSq()>=clearance*clearance)continue;
+            nearestBlock=ahead;
+            navDeparture.copy(navObstacle).negate();
+            if(navDeparture.lengthSq()<1)navDeparture.copy(smoothUp).projectOnPlane(navRoute);
+            if(navDeparture.lengthSq()<1e-6)navDeparture.crossVectors(navRoute,Math.abs(navRoute.y)<.9?frameScratch.localUp:frameScratch.localRight);
+            navDeparture.setLength(clearance*1.25).addScaledVector(navRoute,Math.max(clearance,ahead*.65)).normalize();
+            departure=navDeparture;
+          }
+          if(departure)navFrame.copy(frameVelocity);
+        }
+        autopilot.plan({offset:navOffset,velocity:navVelocity.copy(vel).sub(navFrame),arrivalRadius,
+          landing,departure,surface,speedLimit:nearBlackhole?C_WORLD*.985:worldSize(2.4e21),canAccelerate:fuel>1});
+        if(autopilot.command.lengthSq()>.01)aim.copy(autopilot.command).normalize();
+      }else autopilot.reset();
       if(flightDynamics.rig&&!flightDynamics.rig.initialized&&characterMotion)flightDynamics.rig.initialize(characterMotion.attitude,smoothUp);
       flightDynamics.update(dt,{velocity:vel,gravity:accel,up:smoothUp,move:mv,aim,
         frameVelocity,surface,fuel,heading:h,position:pos,center:nearestP.center,body:nearestP,thrust:wantsThrust,braking,nearBlackhole});
       activeThrustDirection.copy(flightDynamics.direction);
       flightThrottle=flightDynamics.throttle;flightBrake=flightDynamics.brake;
       thrusting=flightDynamics.powered;
-      fuel=Math.max(0,fuel-flightDynamics.fuelUsed);
-      if(thrusting){
-        lastThrustTime=elapsed;
-      }else if(elapsed-lastThrustTime>FUEL_REGEN_DELAY){
-        fuel=Math.min(FUEL_MAX,fuel+FUEL_REFILL_AIR*dt);
-      }
-
-      // Target-assisted arrival. A T/F lock now predicts the intercept several
-      // seconds ahead and begins braking while there is still enough distance.
-      // Planets settle to a walking-speed touchdown; stars stop at a safe
-      // observation radius because their visible surface cannot be landed on.
-      let assistActive=false;
-      const assistBody=target&&!target.catalogOnly&&!target.destroyed&&!target.blackhole&&target.mesh?target:null;
-      if(assistBody){
-        approachTo.copy(assistBody.center).sub(pos);
-        const centerDistance=approachTo.length();
-        if(centerDistance>1e-5){
-          approachDir.copy(approachTo).divideScalar(centerDistance);
-          if(assistBody===airCarry)approachVelocity.copy(vel);
-          else approachVelocity.copy(vel).sub(assistBody.velNow);
-          const closingSpeed=approachVelocity.dot(approachDir);
-          const safeRadius=assistBody.deadly?assistBody.r*3.4:assistBody.r+PLAYER_FEET;
-          const remaining=Math.max(0,centerDistance-safeRadius);
-          if(closingSpeed>1){
-            // Exponential braking covers roughly velocity/rate metres. A
-            // five-second look-ahead remains stable even at interstellar speed.
-            const interceptSpeed=Math.max(closingSpeed,approachVelocity.length()*.45);
-            const leadDistance=interceptSpeed*5.2+Math.max(assistBody.r*.18,120);
-            const urgency=THREE.MathUtils.clamp(1-remaining/Math.max(leadDistance,1),0,1);
-            if(urgency>0||remaining<Math.max(assistBody.r*.3,5000)){
-              assistActive=true;
-              const nearZone=Math.max(assistBody.r*.16,5000);
-              // Preserve fast travel until braking is required, then converge
-              // on a short arrival time instead of crawling for minutes.
-              let desiredClosing=remaining;
-              if(remaining<nearZone){
-                desiredClosing=(assistBody.deadly?0:2.8)+remaining/.55;
-              }
-              desiredClosing=Math.max(assistBody.deadly?0:2.8,Math.min(closingSpeed,desiredClosing));
-              const brakeRate=6+urgency*12+(remaining<nearZone?2:0);
-              const correctedClosing=damp(closingSpeed,desiredClosing,brakeRate,dt);
-              approachLateral.copy(approachVelocity).addScaledVector(approachDir,-closingSpeed);
-              const alignRate=.35+urgency*4.8+(remaining<nearZone?1.6:0);
-              approachLateral.multiplyScalar(Math.exp(-alignRate*dt));
-              approachVelocity.copy(approachDir).multiplyScalar(correctedClosing).add(approachLateral);
-              if(assistBody===airCarry)vel.copy(approachVelocity);
-              else vel.copy(assistBody.velNow).add(approachVelocity);
-              approachAssist=damp(approachAssist,Math.max(.12,urgency),7,dt);
-            }
-          }
+      let fuelUsed=flightDynamics.fuelUsed;
+      if(guided){
+        autopilot.step(dt,navVelocity);
+        const closing=navVelocity.dot(autopilot.direction);
+        const oldClosing=autopilot.relative.dot(autopilot.direction);
+        const remaining=Math.max(0,autopilot.remaining);
+        // Account for the trapezoidal integrator when locking onto a world
+        // while already moving too fast to stay within the braking envelope.
+        const limit=remaining/Math.max(dt,1e-6)+(autopilot.phase==='LANDING'?2.5:0);
+        if(autopilot.phase!=='DEPARTURE'&&(closing+oldClosing)*.5>limit){
+          navVelocity.addScaledVector(autopilot.direction,Math.min(closing,limit)-closing);
+          flightDynamics.previousVelocity.copy(navVelocity).add(navFrame);
         }
+        vel.copy(navVelocity).add(navFrame);
+        const gaining=navVelocity.lengthSq()>autopilot.relative.lengthSq();
+        fuelUsed=gaining&&fuel>1&&autopilot.phase!=='LANDING'?Math.min(1.35*dt,fuel-1):0;
       }
-      if(!assistActive)approachAssist=damp(approachAssist,0,8,dt);
+      fuel=Math.max(0,fuel-fuelUsed);
+      if(fuelUsed>0)lastThrustTime=elapsed;
+      else if(elapsed-lastThrustTime>FUEL_REGEN_DELAY)fuel=Math.min(FUEL_MAX,fuel+FUEL_REFILL_AIR*dt);
+
       if (nearestP === airCarry) tmpV3.copy(vel);
       else tmpV3.copy(vel).sub(nearestP.velNow);
       const speedLimit=nearBlackhole?C_WORLD*.985:Math.min(worldSize(2.4e21),Math.max(worldSize(19500),distSurf*.8));
       const controlledLimit=nearBlackhole||currentFlightSpeed>=worldSize(2.4e21)
         ? speedLimit:Math.max(speedLimit,currentFlightSpeed*1.015);
-      if (tmpV3.length() > controlledLimit) {
+      if ((!guided||nearBlackhole)&&tmpV3.length() > controlledLimit) {
         const easedSpeed=damp(tmpV3.length(),controlledLimit,nearBlackhole?9:1.2,dt);
         tmpV3.setLength(easedSpeed);
         if (nearestP === airCarry) vel.copy(tmpV3);
@@ -6528,6 +6639,7 @@
       tmpQ.copy(camera.quaternion).invert();
       blackhole.lensingMaterial.uniforms.diskNormal.value
         .copy(blackhole.diskNormalWorld).applyQuaternion(tmpQ).normalize();
+      blackhole.lensingMaterial.uniforms.galacticPole.value.copy(milkyNormal).applyQuaternion(tmpQ);
     }
 
     // ---- Orbital laser ----
@@ -6726,8 +6838,8 @@
       if(fuelBar.style.width!==fuelWidth)fuelBar.style.width=fuelWidth;
       if (target) {
         setHudText(targetBanner,target.name.toUpperCase() + ' — ' +
-          fmtDist(Math.max(0, pos.distanceTo(target.center) - target.r)) +
-          (approachAssist>.06?(target.deadly?'  ·  AUTO APPROACH':'  ·  AUTO LAND'):''));
+          fmtDist(Math.max(0,navActive?autopilot.remaining:pos.distanceTo(target.center)-target.r)) +
+          (navActive?'  ·  '+autopilot.phase:navigableTarget(target)?'  ·  HOLD SPACE':''));
       }
     }
     if (charging) {
@@ -6760,8 +6872,9 @@
     earthTileRotation.makeRotationFromQuaternion(earth.mesh.quaternion).invert();
     earthTilePlanetInverse.value.setFromMatrix4(earthTileRotation);
     if (stylePass) stylePass.uniforms.time.value = elapsed;
-    const landingAreaReady=!loaderHidden&&earthElevation.ready&&
-      (earthSurfaceTiles.committedSignature||pos.distanceToSquared(earth.center)>(earth.r+worldSize(5000))**2);
+    const landingAreaReady=!loaderHidden&&earthCameraCutaway.value>=0&&
+      earthLoadedSurfaceRadius(tmpV.copy(pos).sub(earth.center).normalize()
+        .applyQuaternion(tmpQ.copy(earth.mesh.quaternion).invert()))!==null;
     // Warm shaders behind the loading screen without competing with terrain
     // streaming for a full-resolution draw on every animation frame.
     if(!loaderHidden&&!landingAreaReady){
